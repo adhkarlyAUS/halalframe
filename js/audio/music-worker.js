@@ -1,12 +1,35 @@
 // Fully on-device Silero VAD + UVR MDX-Net vocal-isolation worker.
 // No microphone, server endpoint, API token, or media upload is used.
 // Workers have their own module realm: the document import map does not apply here.
-const RELEASE=new URL(import.meta.url).searchParams.get('v')||'1.5';
-const {MODELS,ORT_BASE,VAD_URL}=await import(`./models.js?v=${RELEASE}`);
-const {resample,stftChunk,istftChunk,blendChunks,deriveGate,HOP,FRAMES}=await import(`./dsp.js?v=${RELEASE}`);
-const AUDIO_CACHE='halalframe-audio-models-v1.5';
+const RELEASE=new URL(import.meta.url).searchParams.get('v')||'1.5.1';
+// Register before ANY asynchronous imports. A module worker can otherwise
+// lose the first process message while its top-level await is evaluating.
+self.onmessage=({data})=>{
+  if(data?.type!=='process')return;
+  void (async()=>{
+    try{
+      pct('start',0,'Loading the on-device audio engine…',data.job);
+      await loadDependencies();
+      await processAudio(data);
+    }catch(error){self.postMessage({type:'error',job:data.job,message:error?.message||String(error)});}
+  })();
+};
+// The editor never posts a job until it receives this handshake.
+self.postMessage?.({type:'ready',version:RELEASE});
+
+const AUDIO_CACHE='halalframe-audio-models-v1.5'; // retain user's existing offline downloads
 let ort=null, vadSession=null, stemSession=null,stemKey=null,stemDelegate=null;
-const pct=(stage,ratio,message,job)=>postMessage({type:'progress',job,stage,ratio,detail:message});
+let MODELS,ORT_BASE,VAD_URL,resample,stftChunk,istftChunk,blendChunks,deriveGate,HOP,FRAMES,suppressSteadyTones;
+let depsPromise=null;
+function loadDependencies(){
+  return depsPromise??=Promise.all([
+    import(`./models.js?v=${RELEASE}`),import(`./dsp.js?v=${RELEASE}`)
+  ]).then(([models,dsp])=>{
+    ({MODELS,ORT_BASE,VAD_URL}=models);
+    ({resample,stftChunk,istftChunk,blendChunks,deriveGate,HOP,FRAMES,suppressSteadyTones}=dsp);
+  }).catch(error=>{depsPromise=null;throw error;});
+}
+const pct=(stage,ratio,message,job)=>self.postMessage({type:'progress',job,stage,ratio,detail:message});
 const secs=()=>performance.now()/1000;
 async function loadRuntime(){
   if(ort)return ort;
@@ -72,6 +95,7 @@ async function voiceActivity(audio,rate,job){
 }
 async function isolateStem(audio,rate,quality,job){
   const cfg=MODELS[quality];if(!cfg)throw new Error('Unsupported separation quality');
+  pct('models',0,`Selected ${cfg.name} (${(cfg.size/1048576).toFixed(1)} MB)`,job);
   if(!stemSession||stemKey!==quality){if(stemSession)await stemSession.release().catch(()=>{});
     const r=await sessionFrom(cfg.url,cfg.size,job,cfg.name,cfg.sha256);stemSession=r.session;stemKey=quality;stemDelegate=r.delegate;
     postMessage({type:'delegate',job,delegate:r.delegate});
@@ -146,11 +170,15 @@ async function processAudio(message){
   }else{
     const vocals=await isolateStem(input,sampleRate,quality,job);
     result=applyGateAndStrict({original:input,vocals,gate,rate:sampleRate,strength,strict});
+    if(strength==='maximum'){
+      pct('refine',0,'Maximum: identifying persistent musical tones…',job);
+      const refined=suppressSteadyTones({original:input,vocals:result,gate,rate:sampleRate,
+        onProgress:ratio=>pct('refine',ratio,'Maximum: reducing persistent tones under speech…',job)});
+      result=refined.channels;
+      pct('refine',1,refined.tones?`Maximum: reduced ${refined.tones} stable tonal frequencies; listen for residual music`:
+        'Maximum: no reliable music-only tonal reference; voice isolation retained',job);
+    }
   }
   const transfer=result.map(x=>x.buffer);
   postMessage({type:'complete',job,channels:transfer,sampleRate,speechPercent:Math.round(100*speechEnergy),elapsed:secs()-started},transfer);
 }
-self.onmessage=async({data})=>{
-  if(data?.type!=='process')return;
-  try{await processAudio(data);}catch(e){postMessage({type:'error',job:data.job,message:e?.message||String(e)});}
-};

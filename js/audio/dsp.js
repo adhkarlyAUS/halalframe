@@ -132,3 +132,97 @@ export function deriveGate(scores,rate,length,{strength='strong',fadesMs=12}={})
   return output;
 }
 export function rmsEnergy(arr,lo=0,hi=arr.length){let sum=0;for(let i=lo;i<hi;i++)sum+=arr[i]*arr[i];return Math.sqrt(sum/Math.max(1,hi-lo));}
+
+/**
+ * Maximum-only second pass: attenuate narrow, persistent instrumental tones
+ * identified in MUSIC-ONLY portions of the ORIGINAL recording, then notch
+ * those frequencies in the separated vocal stem during speech.
+ *
+ * This is a conservative reference-driven notch filter, not a universal music
+ * detector. If no trustworthy non-speech reference exists, the original vocal
+ * stem is returned untouched. Speech harmonics may overlap instruments, so the
+ * user must listen for distortion and can always choose "No audio" instead.
+ * Operates locally in the audio worker; no raw audio leaves the browser.
+ */
+export function suppressSteadyTones({original,vocals,gate,rate,onProgress=()=>{}}){
+  const size=4096,hop=1024,half=size/2;
+  const length=vocals[0]?.length||0;
+  if(!length||!original[0]||gate.length!==length)return {channels:vocals,tones:0};
+  const window=hann(size),energy=new Float64Array(half),frames=Math.max(1,Math.ceil((length-size)/hop)+1);
+  let references=0;
+  const re=new Float64Array(size),im=new Float64Array(size);
+  // A non-speech reference is essential. Only use windows that VAD marked
+  // silent through the center AND both ends (ignore transition fades).
+  for(let f=0;f<frames;f++){
+    const start=f*hop;
+    const a=Math.min(length-1,start+Math.round(size*.1)),
+      m=Math.min(length-1,start+half),b=Math.min(length-1,start+Math.round(size*.9));
+    if(gate[a]>.015||gate[m]>.015||gate[b]>.015)continue;
+    for(let i=0;i<size;i++){
+      const j=start+i;
+      const mono=j<length?(original.length>1?(original[0][j]+original[1][j])*.5:original[0][j]):0;
+      re[i]=mono*window[i];im[i]=0;
+    }
+    fft(re,im);
+    for(let k=0;k<half;k++)energy[k]+=Math.hypot(re[k],im[k]);
+    references++;
+  }
+  if(references<4)return {channels:vocals,tones:0};
+  for(let k=0;k<half;k++)energy[k]/=references;
+  let peak=0;for(let k=8;k<half;k++)peak=Math.max(peak,energy[k]);
+  const gain=new Float64Array(half+1).fill(1);
+  let tones=0;
+  for(let k=8;k<half-12;k++){
+    const frequency=k*rate/size;
+    if(frequency<85||frequency>4200||energy[k]<peak*.018)continue;
+    if(energy[k]<energy[k-1]||energy[k]<energy[k+1])continue;
+    let local=0,n=0;
+    for(let offset=-10;offset<=10;offset++){
+      if(Math.abs(offset)<3)continue;
+      local+=energy[k+offset];n++;
+    }
+    const prominence=energy[k]/Math.max(1e-8,local/n);
+    if(prominence<1.9)continue;
+    tones++;
+    // Up to ~20 dB at a strong, stable peak. Feather neighbouring FFT bins
+    // so sub-bin frequency drift is also suppressed without a hard ringing notch.
+    const depth=Math.min(.91,.66+.07*Math.log2(prominence));
+    for(let offset=-3;offset<=3;offset++){
+      const at=k+offset;
+      const weight=Math.exp(-.5*(offset/1.15)**2);
+      gain[at]=Math.min(gain[at],1-depth*weight);
+    }
+  }
+  if(!tones)return {channels:vocals,tones:0};
+  const output=vocals.map(()=>new Float32Array(length)),weights=new Float32Array(length);
+  for(let f=0;f<frames;f++){
+    const start=f*hop;
+    for(let c=0;c<output.length;c++){
+      const channel=vocals[c];
+      for(let i=0;i<size;i++){
+        const j=start+i;re[i]=(j<length?channel[j]:0)*window[i];im[i]=0;
+      }
+      fft(re,im);
+      // Real-input spectrum requires Hermitian symmetry after filtering.
+      for(let k=1;k<half;k++){
+        const g=gain[k];re[k]*=g;im[k]*=g;re[size-k]*=g;im[size-k]*=g;
+      }
+      fft(re,im,true);
+      for(let i=0;i<size&&start+i<length;i++){
+        const at=start+i,w=window[i];
+        output[c][at]+=re[i]*w;
+        if(c===0)weights[at]+=w*w;
+      }
+    }
+    if(f%24===0)onProgress(f/frames);
+  }
+  for(let c=0;c<output.length;c++){
+    for(let i=0;i<length;i++){
+      // Retain the original gate: music-only regions cannot become audible
+      // through overlap-add or the spectral pass.
+      output[c][i]=weights[i]>1e-7?(output[c][i]/weights[i])*gate[i]:vocals[c][i]*gate[i];
+    }
+  }
+  onProgress(1);
+  return {channels:output,tones};
+}
