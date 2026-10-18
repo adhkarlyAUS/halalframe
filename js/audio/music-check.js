@@ -24,7 +24,10 @@ export function interpretYamnet(result){
     for(const [key,value] of Object.entries(x))if(key!=='headIndex'&&key!=='headName')visit(value);
   };visit(result);
   const maxOf=pattern=>Math.max(0,...all.filter(x=>pattern.test(x.name)).map(x=>x.score));
+  const instrument=maxOf(/musical instrument|drum|piano|keyboard|guitar|bass guitar|synthesizer|orchestra|percussion|violin|cello|trumpet|harp|flute|chord|harpsichord|saxophone|organ|ukulele/i);
+  const singing=maxOf(/singing|choir|vocal music/i);
   return {music:maxOf(/music|musical instrument|singing|drum|piano|keyboard|guitar|bass guitar|synthesizer|orchestra|percussion|violin|cello|trumpet|harp|flute|chord/i),
+    instrument,singing,
     speech:maxOf(/speech|narration|conversation|speaking|whispering|male voice|female voice/i),top:all.sort((a,b)=>b.score-a.score).slice(0,3)};
 }
 export function smoothRiskGate(audio,rate,riskRanges,{fadeMs=35}={}){
@@ -57,10 +60,19 @@ export async function verifyMusic({original,cleaned,rate,strict=false,onProgress
     await new Promise(resolve=>setTimeout(resolve,0));
     const before=interpretYamnet(task.classify(monoChunk(original,i),rate));
     const after=interpretYamnet(task.classify(monoChunk(cleaned,i),rate));
-    blocks.push({start:i,end:Math.min((i+1),original[0].length/rate),before:before.music,after:after.music,speech:Math.max(before.speech,after.speech),
-      state:after.music>=.34?'risk':before.music>=.34?'removed':'speech'});
+    const speaking=Math.max(before.speech,after.speech)>=.16;
+    // High-confidence instruments/music remain red. Lower but meaningful
+    // instrument/music evidence *especially beneath speech* is AMBER, never
+    // a certified green pass. YAMNet is probabilistic: no zero-risk claim.
+    const red=after.music>=.34||after.instrument>=.30;
+    const amber=!red&&(after.instrument>=.07||after.music>=(speaking?.10:.16)||after.singing>=.11);
+    blocks.push({start:i,end:Math.min(i+1,original[0].length/rate),before:before.music,after:after.music,
+      instrument:after.instrument,singing:after.singing,speech:Math.max(before.speech,after.speech),
+      state:red?'risk':amber?'caution':before.music>=.34?'removed':'speech'});
     onProgress((i+1)/n);
   }
-  const risky=blocks.filter(x=>x.state==='risk');
-  return {verified:risky.length===0,method:'YAMNet probabilistic classifier',blocks,remainingRisk:risky.length,total:n,muted:risky.filter(x=>strict||x.speech<.34).length};
+  const risky=blocks.filter(x=>x.state==='risk'),caution=blocks.filter(x=>x.state==='caution');
+  return {verified:risky.length===0&&caution.length===0,method:'YAMNet probabilistic classifier',blocks,
+    remainingRisk:risky.length,remainingCaution:caution.length,total:n,
+    muted:risky.filter(x=>strict||x.speech<.34).length};
 }
