@@ -1,7 +1,7 @@
 // Segmentation is entirely local. Masks are cached per video frame/subject.
 // A cache miss NEVER disables masking: the renderer falls back to the entire padded box.
 import {activeAt,boxAt,clamp} from '../state.js';
-import {pixelBox} from './render.js';
+import {concealmentRect} from './render.js';
 import {appearanceSignature,appearanceSimilarity,iou} from './identity.js';
 export const MASK_RESOLUTION=256;
 const TEST_SIZE=MASK_RESOLUTION;
@@ -108,9 +108,78 @@ export function subtractCompetingInstances(target,others,{margin=.10}={}){
   }
   return out;
 }
+// MediaPipe PoseLandmarker excludes most hair above the forehead; its instance
+// mask is NOT a safe full-head silhouette. Enclose the head landmarks in a
+// generous cap, with a fallback anchored to the current TARGET box only.
+const HEAD_POINTS=[0,1,2,3,4,5,6,7,8,9,10];
+const clamp01=n=>clamp(n,0,1);
+const unionBounds=(a,b)=>{
+  const x=Math.min(a.x,b.x),y=Math.min(a.y,b.y);
+  return {x,y,w:Math.max(a.x+a.w,b.x+b.w)-x,h:Math.max(a.y+a.h,b.y+b.h)-y};
+};
+export function headBoundsFromPose(landmarks,box){
+  const valid=p=>p&&Number.isFinite(p.x)&&Number.isFinite(p.y)&&p.x>=0&&p.x<=1&&p.y>=0&&p.y<=1&&(p.visibility??1)>.23;
+  const head=HEAD_POINTS.map(i=>landmarks?.[i]).filter(valid);
+  const shoulders=[landmarks?.[11],landmarks?.[12]].filter(valid);
+  // With missing face landmarks use a generous TOP cap of the selected box;
+  // do not use the other person's face or whole-frame multiclass labels.
+  if(head.length<3){
+    const x=box.x+box.w*.15,y=box.y-box.h*.27;
+    return {x:clamp01(x),y:clamp01(y),w:Math.min(1-clamp01(x),box.w*.70),h:Math.min(1-clamp01(y),box.h*.72)};
+  }
+  const xs=head.map(p=>p.x),ys=head.map(p=>p.y);
+  const ears=[landmarks?.[7],landmarks?.[8]].filter(valid);
+  const eyes=[landmarks?.[1],landmarks?.[2],landmarks?.[3],landmarks?.[4],landmarks?.[5],landmarks?.[6]].filter(valid);
+  const centreX=ears.length===2?(ears[0].x+ears[1].x)/2:xs.reduce((a,b)=>a+b,0)/xs.length;
+  const eyeY=eyes.length?Math.min(...eyes.map(p=>p.y)):Math.min(...ys);
+  const shoulderY=shoulders.length?shoulders.reduce((a,b)=>a+b.y,0)/shoulders.length:eyeY+box.h*.40;
+  const earWidth=ears.length===2?Math.abs(ears[0].x-ears[1].x):Math.max(...xs)-Math.min(...xs);
+  const shoulderWidth=shoulders.length===2?Math.abs(shoulders[0].x-shoulders[1].x):box.w;
+  const height=Math.max(box.h*.19,Math.max(0,shoulderY-eyeY)*.72,earWidth*.62);
+  const width=Math.max(box.w*.48,earWidth*1.58,shoulderWidth*.70);
+  // 1.10 head heights ABOVE the eyes extends beyond hairline; >0.3 each
+  // side of ear span. Include forehead, eyes, hair, cheeks and upper neck.
+  const top=Math.min(eyeY-1.10*height,box.y-box.h*.22);
+  const bottom=Math.max(Math.max(...ys)+.65*height,box.y+box.h*.39);
+  const left=Math.min(centreX-width*.60,box.x+box.w*.15);
+  const right=Math.max(centreX+width*.60,box.x+box.w*.85);
+  const x=clamp01(left),y=clamp01(top);
+  return {x,y,w:Math.max(0,Math.min(1,right)-x),h:Math.max(0,Math.min(1,bottom)-y)};
+}
+// The cap is deliberately opaque: slightly over-covering background adjacent
+// to the selected head is safer than exposing a fringe, forehead or eyes.
+export function unionHeadRegion(mask,rect,videoW,videoH,headBounds){
+  const side=Math.round(Math.sqrt(mask.length)),result=new Uint8Array(mask);
+  if(!headBounds||!headBounds.w||!headBounds.h)return result;
+  const x0=clamp(Math.floor((headBounds.x*videoW-rect.x)/rect.w*side),0,side);
+  const x1=clamp(Math.ceil(((headBounds.x+headBounds.w)*videoW-rect.x)/rect.w*side),0,side);
+  const y0=clamp(Math.floor((headBounds.y*videoH-rect.y)/rect.h*side),0,side);
+  const y1=clamp(Math.ceil(((headBounds.y+headBounds.h)*videoH-rect.y)/rect.h*side),0,side);
+  for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){
+    const idx=y*side+x;
+    // An absent classifier hair label must NEVER expose the target hairline.
+    result[idx]=255;
+  }
+  return result;
+}
+// Add classifier-detected hair beyond the geometric cap only in a narrow
+// neighbourhood of the selected head. The all-person hair map is NEVER used
+// outside that region; the other subject is not part of this target mask.
+export function addTargetHairPixels(mask,categories,rect,W,H,headBounds){
+  if(!categories||!headBounds||categories.length!==mask.length)return mask;
+  const n=Math.round(Math.sqrt(mask.length)),out=new Uint8Array(mask);
+  const x0=clamp01(headBounds.x-headBounds.w*.12),x1=clamp01(headBounds.x+headBounds.w*1.12);
+  const y0=clamp01(headBounds.y-headBounds.h*.14),y1=clamp01(headBounds.y+headBounds.h*1.07);
+  for(let y=0;y<n;y++)for(let x=0;x<n;x++){
+    const i=y*n+x;if(categories[i]!==1)continue;
+    const u=(rect.x+(x+.5)/n*rect.w)/W,v=(rect.y+(y+.5)/n*rect.h)/H;
+    if(u>=x0&&u<=x1&&v>=y0&&v<=y1)out[i]=255;
+  }
+  return out;
+}
 export class MaskCache {
   constructor({maxEntries=110}={}){this.masks=new Map();this.pending=new Map();this.maxEntries=maxEntries;this.generation=0;this.lastMessage='';}
-  key(c,index){return `${this.generation}:${c.id}:${c.shape}:${c.includeFace?1:0}:${c.padding}:${c.feather}:${c.safetyMargin||0}:${index}`;}
+  key(c,index){return `${this.generation}:head-v18:${c.id}:${c.shape}:${c.includeFace?1:0}:${c.padding}:${c.feather}:${c.safetyMargin||0}:${index}`;}
   get(c,index){const k=this.key(c,index);const entry=this.masks.get(k);if(entry){this.masks.delete(k);this.masks.set(k,entry);}return entry||null;}
   put(c,index,value){const k=this.key(c,index);this.masks.delete(k);this.masks.set(k,value);while(this.masks.size>this.maxEntries)this.masks.delete(this.masks.keys().next().value);return value;}
   clear(){this.generation++;this.masks.clear();this.pending.clear();}
@@ -140,7 +209,7 @@ export class MaskCache {
   }
   async compute({source,project,time,c,ai,signal}){
     const b=boxAt(c,time);if(!b)return {fallback:true,reason:'No track point'};
-    const r=pixelBox(b,c.padding??.12,project.video.width,project.video.height);
+    const r=concealmentRect(b,c,project.video.width,project.video.height);
     if(r.w<2||r.h<2)return {fallback:true,reason:'Box too small'};
     const sw=source.videoWidth||source.naturalWidth||source.width||project.video.width;
     const sh=source.videoHeight||source.naturalHeight||source.height||project.video.height;
@@ -171,7 +240,13 @@ export class MaskCache {
         poseAvailable=!!targetPose?.mask;
       }catch(error){this.lastMessage='Pose instance unavailable: '+error.message;}
     }
-    let rawMask=null;
+    // The target head cap MUST survive later instance clipping/dilation.
+    // This is the current target pose, not the enlarged history/union box.
+    const currentBox=poseAvailable&&iou(targetPose.box,b)>.05?targetPose.box:b;
+    const headBounds=c.shape==='outline'?headBoundsFromPose(targetPose?.landmarks,currentBox):null;
+    const expandedHead=headBounds?{x:clamp01(headBounds.x-headBounds.w*.12),y:clamp01(headBounds.y-headBounds.h*.14),w:Math.min(1-clamp01(headBounds.x-headBounds.w*.12),headBounds.w*1.24),h:Math.min(1-clamp01(headBounds.y-headBounds.h*.14),headBounds.h*1.21)}:null;
+    const safeBounds=expandedHead?unionBounds(currentBox,expandedHead):currentBox;
+    let rawMask=null,bodyCoverage=null;
     if(c.shape==='outline'&&poseAvailable){
       rawMask=sampleInstanceMask(targetPose,r,project.video.width,project.video.height);
       // Per-frame pose masks are the only allowed outline source when multiple
@@ -179,9 +254,17 @@ export class MaskCache {
       const competing=instances.filter(p=>p!==targetPose&&p.mask)
         .map(p=>sampleInstanceMask(p,r,project.video.width,project.video.height));
       rawMask=subtractCompetingInstances(rawMask,competing);
+      bodyCoverage=maskRatio(rawMask); // evaluate body BEFORE the head cap is added
+      // On analyzed frames, add hair-class pixels *only* in the target head
+      // region. The geometric cap remains primary when hair labels are absent.
+      if(Math.round(time*project.video.fps)%3===0){
+        try{category=await ai.segmentCrop(maskSource);}catch(error){this.lastMessage='Hair classifier unavailable: '+error.message;}
+      }
+      rawMask=unionHeadRegion(rawMask,r,project.video.width,project.video.height,headBounds);
+      rawMask=addTargetHairPixels(rawMask,category?.data,r,project.video.width,project.video.height,headBounds);
     }else{
       try{category=await ai.segmentCrop(maskSource);}catch(error){this.lastMessage=error.message;}
-      if(category)rawMask=selectCategories(category.data,c.shape,!!c.includeFace);
+      if(category&&c.shape!=='outline')rawMask=selectCategories(category.data,c.shape,!!c.includeFace);
       if(rawMask&&poseAvailable){
         const personMask=sampleInstanceMask(targetPose,r,project.video.width,project.video.height);
         for(let i=0;i<rawMask.length;i++)rawMask[i]=Math.round(rawMask[i]*(personMask[i]/255));
@@ -199,20 +282,23 @@ export class MaskCache {
     // A tracked person may have a larger historical safety box from a crossing.
     // Once they separate, clamp coverage to the target's CURRENT instance box,
     // not the full padded/union region. Cache is frame-local to avoid echoes.
-    const currentBox=poseAvailable&&iou(targetPose.box,b)>.05?targetPose.box:b;
     if(rawMask&&poseAvailable){
-      rawMask=confineMaskToTarget(rawMask,r,project.video.width,project.video.height,currentBox,{margin:.035});
+      rawMask=confineMaskToTarget(rawMask,r,project.video.width,project.video.height,safeBounds,{margin:.035});
     }
-    if(!rawMask||maskRatio(rawMask)<.05){
+    let usedConservativeBox=false;
+    if(!rawMask||maskRatio(rawMask)<.05||(bodyCoverage!==null&&bodyCoverage<.05)){
+      usedConservativeBox=true;
       // Strict fallback for the selected person: safe padded box, minus known
       // unrelated non-overlapping people. Never emit an empty mask.
       rawMask=new Uint8Array(TEST_SIZE*TEST_SIZE).fill(255);
-      rawMask=confineMaskToTarget(rawMask,r,project.video.width,project.video.height,currentBox,{margin:.018});
-      rawMask=subtractUnrelatedPeople(rawMask,r,project.video.width,project.video.height,currentBox,otherBoxes);
+      rawMask=confineMaskToTarget(rawMask,r,project.video.width,project.video.height,safeBounds,{margin:.018});
+      rawMask=subtractUnrelatedPeople(rawMask,r,project.video.width,project.video.height,safeBounds,otherBoxes);
+      if(headBounds)rawMask=unionHeadRegion(rawMask,r,project.video.width,project.video.height,headBounds);
       if(maskRatio(rawMask)<.05)return {fallback:true,reason:'Selected person lost; review this frame'};
       this.lastMessage='Precise pose not detected — bounded conservative box';
     }else{
-      rawMask=subtractUnrelatedPeople(rawMask,r,project.video.width,project.video.height,currentBox,otherBoxes);
+      rawMask=subtractUnrelatedPeople(rawMask,r,project.video.width,project.video.height,safeBounds,otherBoxes);
+      if(headBounds)rawMask=unionHeadRegion(rawMask,r,project.video.width,project.video.height,headBounds);
       if(maskRatio(rawMask)<.05)return {fallback:true,reason:'Selected person mask too small'};
     }
     const feather=Number(c.feather||0),margin=Number(c.safetyMargin||0);
@@ -220,14 +306,15 @@ export class MaskCache {
     const grown=dilateMask(rawMask,TEST_SIZE,TEST_SIZE,radius);
     // Reapply explicit exclusions after dilation to avoid halo bleeding into
     // people the user has explicitly marked as "Don't cover".
-    let constrained=subtractUnrelatedPeople(grown,r,project.video.width,project.video.height,currentBox,otherBoxes);
+    let constrained=subtractUnrelatedPeople(grown,r,project.video.width,project.video.height,safeBounds,otherBoxes);
+    if(headBounds)constrained=unionHeadRegion(constrained,r,project.video.width,project.video.height,headBounds);
     if(c.precisionCritical){
       // Crucial: no previous-frame alpha blending for selected-person masks.
       // That caused an unrelated person to stay pixelated after separation.
-      constrained=confineMaskToTarget(constrained,r,project.video.width,project.video.height,currentBox,{margin:.045});
+      constrained=confineMaskToTarget(constrained,r,project.video.width,project.video.height,safeBounds,{margin:.045});
     }
     const previous=!c.precisionCritical?this.get(c,Math.round(time*project.video.fps)-1):null;
     const stable=previous&&!previous.fallback&&previous.data?smoothMask(constrained,previous.data,.84):constrained;
-    return {fallback:false,data:stable,width:TEST_SIZE,height:TEST_SIZE,reason:poseAvailable?'Per-person pose mask':'Target-box fallback',ratio:maskRatio(rawMask),instance:poseAvailable};
+    return {fallback:false,data:stable,width:TEST_SIZE,height:TEST_SIZE,reason:usedConservativeBox?'Conservative target box + head':poseAvailable?'Per-person pose mask':'Target-box fallback',ratio:maskRatio(rawMask),instance:poseAvailable};
   }
 }

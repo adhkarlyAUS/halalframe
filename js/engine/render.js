@@ -10,6 +10,16 @@ export function pixelBox(box,padding,W,H){
   const x=clamp((box.x-dx)*W,0,W),y=clamp((box.y-dy)*H,0,H);
   return {x,y,w:clamp((box.w+2*dx)*W,0,W-x),h:clamp((box.h+2*dy)*H,0,H-y)};
 }
+// Outline masks need room above the pose/detector's highest landmark:
+// forehead landmarks often start BELOW the hairline. Preview and export share
+// this exact geometry, so their masks cannot diverge.
+export function concealmentRect(box,c,W,H){
+  const r=pixelBox(box,c?.wholeFrame?0:(c?.padding??.12),W,H);
+  if(c?.shape!=='outline'||c?.wholeFrame)return r;
+  const extraTop=box.h*H*.30,extraSide=box.w*W*.10;
+  const x=Math.max(0,r.x-extraSide),y=Math.max(0,r.y-extraTop);
+  return {x,y,w:Math.min(W-x,r.w+(r.x-x)+extraSide),h:Math.min(H-y,r.h+(r.y-y))};
+}
 function maskImage(entry){
   size(maskCanvas,entry.width,entry.height);
   const img=maskCtx.createImageData(entry.width,entry.height);
@@ -25,7 +35,7 @@ export function renderFrame(ctx,source,project,time,{debug=false,detections=[],d
   const idx=Math.round(time*Math.max(1,project.video.fps));
   for(const c of activeAt(project,time)){
     const b=c.wholeFrame?{x:0,y:0,w:1,h:1}:boxAt(c,time);if(!b)continue;
-    const r=pixelBox(b,c.wholeFrame?0:(c.padding??.12),W,H);if(r.w<1||r.h<1)continue;
+    const r=concealmentRect(b,c,W,H);if(r.w<1||r.h<1)continue;
     const entry=(c.shape==='box'||c.wholeFrame)?null:maskCache?.get(c,idx);
     // Only two supported effects: legacy black/brand projects migrate to Pixelate.
     // Treat any unknown value as Pixelate defensively, including during undo/redo.
