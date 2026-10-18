@@ -44,11 +44,24 @@ export function renderFrame(ctx,source,project,time,{debug=false,detections=[],d
       effectCtx.drawImage(source,-r.x,-r.y,W,H);
       effectCtx.restore();
     }
+    if(!precise&&c.precisionCritical&&!c.wholeFrame){
+      // Before a unique pose mask is available, DO NOT pixelate the padded
+      // multiclass crop. Restrict the provisional mask to the selected track
+      // box; neighbouring people in padding stay visible.
+      effectCtx.globalCompositeOperation='destination-in';effectCtx.fillStyle='#fff';
+      const bx=Math.max(0,b.x*W-r.x),by=Math.max(0,b.y*H-r.y);
+      effectCtx.fillRect(bx,by,Math.max(1,b.w*W),Math.max(1,b.h*H));
+      effectCtx.globalCompositeOperation='source-over';
+    }
     if(precise){
       const m=maskImage(entry);
       // Smooth cropped mask edges only; conservative dilation is applied before this stage.
       size(maskSmoothCanvas,ew,eh);maskSmoothCtx.clearRect(0,0,ew,eh);
       maskSmoothCtx.filter='blur(2px)';maskSmoothCtx.drawImage(m,0,0,ew,eh);maskSmoothCtx.filter='none';
+      // Never let antialiasing reintroduce pixels into an excluded person.
+      maskSmoothCtx.globalCompositeOperation='destination-in';
+      maskSmoothCtx.drawImage(m,0,0,ew,eh);
+      maskSmoothCtx.globalCompositeOperation='source-over';
       effectCtx.globalCompositeOperation='destination-in';
       effectCtx.drawImage(maskSmoothCanvas,0,0,ew,eh);
       effectCtx.globalCompositeOperation='source-over';

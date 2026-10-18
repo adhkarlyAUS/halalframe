@@ -1,4 +1,5 @@
 import {addPoint,clamp,normalizedBox} from '../state.js';
+import {appearanceSignature,appearanceSimilarity,hungarian,associationCost,MultiObjectAssociator,iou,poseBodySignature,poseSimilarity} from './identity.js';
 
 // Analysis resolution is user-selectable; short clips default to every source frame.
 export const TRACK_FPS = 30;
@@ -187,6 +188,29 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
   const fps=analysisFPS(project,accuracy),step=1/fps;
   let missedFor=0,weakFor=0,ambiguousFor=0,nextPeriodic=Math.abs(start)+(checkEvery||Infinity);
   let lastReviewTime=-Infinity,lastProcessedTime=start,steps=0,endedEarly=false;
+  // All people are tracked, even when only one is selected. Never identify a
+  // person based solely on a bounding box overlapping the last position.
+  const allPeople=new MultiObjectAssociator({threshold:.78});
+  let targetIdentity=null;
+  try{
+    const initial=await ai.detect(video,start,project.video.fps);
+    const initialized=allPeople.update(video,initial,start);
+    targetIdentity=initialized.sort((a,b)=>iou(b.box,last)-iou(a.box,last))[0]?.id||null;
+    if(!concealment.identitySignature)concealment.identitySignature=appearanceSignature(video,last);
+    if(!concealment.refEmbedding&&typeof ai.embedPerson==='function'){
+      try{concealment.refEmbedding=await ai.embedPerson(video,last);}catch{concealment.refEmbedding=null;}
+    }
+    if(!concealment.poseSignature&&typeof ai.poseInstances==='function'){
+      try{
+        const poses=await ai.poseInstances(video,start,project.video.fps);
+        const closest=poses.sort((a,b)=>iou(b.box,last)-iou(a.box,last))[0];
+        if(closest&&iou(closest.box,last)>.06)concealment.poseSignature=poseBodySignature(closest.landmarks);
+      }catch{/* Colour signature and motion remain available. */}
+    }
+    if(!concealment.thumbnail&&typeof document!=='undefined')concealment.thumbnail=personThumbnail(video,last);
+  }catch{}
+  concealment.precisionCritical=true;
+  concealment.otherPeople=[];let crossings=0,lastEmbedTime=-Infinity;
   const historySizes=[last];const sizeAnchor={w:last.w,h:last.h};
   const centreFilter=new OneEuroCentre(last,start);
   try{
@@ -198,7 +222,42 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       await seekFrame(video,at,{signal});
       const detections=await ai.detect(video,at,project.video.fps);
       const signedDT=at-measuredLast.t;
-      const match=reacquirePerson(measuredLast,detections,velocity,signedDT,{lostFor:Math.abs(at-measuredLast.t)});
+      const assignments=allPeople.update(video,detections,at);
+      const assigned=assignments.find(x=>x.id===targetIdentity);
+      const others=assignments.filter(x=>x.id!==targetIdentity).map(x=>x.box);
+      if(others.length)concealment.otherPeople.push({t:at,boxes:others});
+      let match=reacquirePerson(measuredLast,detections,velocity,signedDT,{lostFor:Math.abs(at-measuredLast.t)});
+      if(targetIdentity && assignments.length>1){
+        if(assigned){
+          const candidate=matchPerson(measuredLast,[assigned.box],velocity,signedDT);
+          const sim=appearanceSimilarity(concealment.identitySignature,assigned.appearance);
+          if(candidate&&sim>.27)match={...candidate,ambiguous:sim<.43,confidence:Math.min(candidate.confidence,Math.max(.45,sim))};
+          else match=null; // Ask instead of concealing the wrong person's body.
+        }else match=null;
+      }
+      if(assigned&&assigned.confidence<.45&&assignments.length>1&&match)match.ambiguous=true;
+      const crossing=!!(match&&others.some(other=>iou(other,match.box)>.08));
+      if(crossing)crossings++;
+      if(match&&crossing&&concealment.poseSignature&&typeof ai.poseInstances==='function'&&Math.abs(at-lastEmbedTime)>.45){
+        try{
+          const poses=await ai.poseInstances(video,at,project.video.fps);
+          const pose=poses.sort((a,b)=>iou(b.box,match.box)-iou(a.box,match.box))[0];
+          const ratio=poseBodySignature(pose?.landmarks);
+          if(ratio&&poseSimilarity(concealment.poseSignature,ratio)<.67){match.ambiguous=true;match.confidence=Math.min(match.confidence,.40);}
+        }catch{}
+      }
+      if(match&&crossing&&concealment.refEmbedding&&typeof ai.embedPerson==='function'&&Math.abs(at-lastEmbedTime)>.45){
+        lastEmbedTime=at;
+        try{
+          const candidate=await ai.embedPerson(video,match.box);
+          if(candidate?.length===concealment.refEmbedding.length){
+            const dot=candidate.reduce((n,v,i)=>n+v*concealment.refEmbedding[i],0);
+            const a=Math.hypot(...candidate),b=Math.hypot(...concealment.refEmbedding);
+            const similarity=dot/Math.max(1e-8,a*b);
+            if(similarity<.67){match.ambiguous=true;match.confidence=Math.min(match.confidence,.42);}
+          }
+        }catch{/* Appearance histogram/pose remains as the free fallback. */}
+      }
       const dt=Math.abs(at-lastProcessedTime);
       lastProcessedTime=at;
       const hadLoss=missedFor>step*.75;
@@ -218,7 +277,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       if(reason){
         lastReviewTime=at;nextPeriodic=(direction>0?at:start+(start-at))+(checkEvery||Infinity);
         onFrame(at,detections);
-        const review=await onReview({time:at,reason,detections,proposed:match?.box||conservativeGap(reliableLast,velocity,at-reliableLast.t),direction});
+        const review=await onReview({time:at,reason,detections,proposed:match?.box||conservativeGap(reliableLast,velocity,at-reliableLast.t),direction,expectedThumb:concealment.thumbnail||null,candidateThumb:typeof document!=='undefined'?personThumbnail(video,match?.box||last):null});
         if(signal?.aborted)throw new DOMException('Tracking cancelled','AbortError');
         if(review.action==='end'){
           if(direction>0)concealment.endTime=at;else concealment.startTime=at;
@@ -248,13 +307,21 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       }
       let result,confidence=0;
       if(match){
-        const uncertain=match.confidence<.48||match.box.w<last.w*.85||match.box.h<last.h*.85;
+        const uncertain=match.confidence<.48||match.box.w<measuredLast.w*.85||match.box.h<measuredLast.h*.85;
         sizeAnchor.w=Math.max(sizeAnchor.w,match.box.w);sizeAnchor.h=Math.max(sizeAnchor.h,match.box.h);
         // After a loss restart the filter at the newly observed subject rather
         // than smoothing the inflated safety box into the recovered detection.
         if(hadLoss)centreFilter.reset(match.box,at);
         const filtered=moveCentre(match.box,centreFilter.update(match.box,at));
         result=stableBox(reliableLast,filtered,Math.abs(at-reliableLast.t),historySizes,{uncertain,velocity,anchor:sizeAnchor});
+        if(!uncertain&&match.confidence>.58&&(match.box.confidence??1)>.44){
+          // Once a person is positively re-identified, recover their own
+          // dimensions in under 0.3 s; never retain a union grown in a crossing.
+          const w=clamp(match.box.w,Math.max(.005,ordered[0].w*.90),Math.min(1,ordered[0].w*1.28));
+          const h=clamp(match.box.h,Math.max(.005,ordered[0].h*.90),Math.min(1,ordered[0].h*1.28));
+          const cc=center(filtered);
+          result=boundBox({x:clamp(cc.x-w/2,0,1-w),y:clamp(cc.y-h/2,0,1-h),w,h});
+        }
         confidence=match.confidence;
         measuredPrior=measuredLast;measuredLast={...match.box,t:at};
         reliableLast={...result,t:at};
@@ -279,7 +346,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
 
 function predictedTrack(tr,t){return predictBox(tr.last,tr.velocity||{x:0,y:0},t-tr.lastT);}
 function makeTrack(box,t,id,source,fps){
-  return {id:`person-${id}`,label:`Person ${id}`,thumbnail:personThumbnail(source,box),track:[{t,...box,source:'ai'}],last:box,lastT:t,lastObserved:box,lastObservedT:t,velocity:{x:0,y:0},observations:1,observedTimes:[t],firstT:t,sizeHistory:[box],sizeAnchor:{w:box.w,h:box.h},fps,centreFilter:new OneEuroCentre(box,t)};
+  return {id:`person-${id}`,label:`Person ${id}`,identitySignature:appearanceSignature(source,box),thumbnail:personThumbnail(source,box),track:[{t,...box,source:'ai'}],last:box,lastT:t,lastObserved:box,lastObservedT:t,velocity:{x:0,y:0},observations:1,observedTimes:[t],firstT:t,sizeHistory:[box],sizeAnchor:{w:box.w,h:box.h},fps,centreFilter:new OneEuroCentre(box,t)};
 }
 function fillGap(tr,t,box,confidence){
   const prev=tr.track.at(-1);
@@ -359,16 +426,20 @@ export async function findAllPeople({video,project,ai,accuracy='best',onProgress
       // Otherwise a longer disappearance creates a new Person and leaves
       // a safety mask frozen until the end of the clip.
       const active=tracks;
-      const associations=[];
-      for(const tr of active)for(let b=0;b<boxes.length;b++){
-        const m=reacquirePerson(tr.lastObserved,[boxes[b]],tr.velocity,t-tr.lastObservedT,{lostFor:t-tr.lastObservedT});
-        if(m)associations.push({tr,index:b,score:m.score});
-      }
-      associations.sort((a,b)=>b.score-a.score);
+      const signatures=boxes.map(box=>appearanceSignature(video,box));
+      const matrix=active.map(tr=>boxes.map((box,j)=>{
+        const m=reacquirePerson(tr.lastObserved,[box],tr.velocity,t-tr.lastObservedT,{lostFor:t-tr.lastObservedT});
+        if(!m)return 10;
+        const sim=appearanceSimilarity(tr.identitySignature,signatures[j]);
+        // Predicted motion, size and appearance jointly determine assignment.
+        return (1-m.score)*.60+(1-sim)*.40;
+      }));
       const usedTracks=new Set(),usedBoxes=new Set();
-      for(const a of associations){
-        if(usedTracks.has(a.tr)||usedBoxes.has(a.index))continue;
-        appendObservation(a.tr,boxes[a.index],t);usedTracks.add(a.tr);usedBoxes.add(a.index);
+      for(const [i,j] of hungarian(matrix)){
+        if(matrix[i][j]>.63)continue;
+        const tr=active[i];appendObservation(tr,boxes[j],t);
+        if(signatures[j])tr.identitySignature=tr.identitySignature?tr.identitySignature.map((x,k)=>.97*x+.03*signatures[j][k]):signatures[j];
+        usedTracks.add(tr);usedBoxes.add(j);
       }
       // Account for every moment without a detection: keep a growing,
       // prediction-aware mask until a person reappears or the video ends.
@@ -422,7 +493,7 @@ export async function findAllPeople({video,project,ai,accuracy='best',onProgress
       else if(lostStart!==null){if(lostEnd-lostStart>=MAX_BRIDGE_SECONDS)(tr.reviewGaps??=[]).push({from:lostStart,to:lostEnd});lostStart=null;lostEnd=null;}
     }
     if(lostStart!==null&&lostEnd-lostStart>=MAX_BRIDGE_SECONDS)(tr.reviewGaps??=[]).push({from:lostStart,to:lostEnd});
-    return {id:`person-${index+1}`,label:`Person ${index+1}`,track:tr.track,thumbnail:tr.thumbnail,
+    return {id:`person-${index+1}`,label:`Person ${index+1}`,track:tr.track,thumbnail:tr.thumbnail,identitySignature:tr.identitySignature||null,
       startTime:tr.track[0].t,endTime:tr.track.at(-1).t,reviewGaps:tr.reviewGaps||[]};
   });
 }

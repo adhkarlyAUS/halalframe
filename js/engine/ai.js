@@ -5,7 +5,9 @@ export const PACKAGE=`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MED
 export const MODELS={
   detector16:'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite',
   detector32:'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float32/1/efficientdet_lite0.tflite',
-  segmenter:'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite'
+  segmenter:'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite',
+  pose:'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
+  embedder:'https://storage.googleapis.com/mediapipe-models/image_embedder/mobilenet_v3_small/float32/1/mobilenet_v3_small.tflite'
 };
 const inputCanvas=document.createElement('canvas');
 const inputCtx=inputCanvas.getContext('2d',{willReadFrequently:true});
@@ -19,7 +21,7 @@ function personBoxes(result,width,height) {
 }
 export class PersonAI {
   constructor({onStatus=()=>{}}={}){
-    this.onStatus=onStatus;this.detector=null;this.segmenter=null;this.delegate='uninitialized';this.frameCache=new Map();this.lastTime=0;this.segmentLastTime=0;this.segmentDelegate='uninitialized';this.running=false;
+    this.onStatus=onStatus;this.detector=null;this.segmenter=null;this.pose=null;this.posePromise=null;this.poseDelegate='uninitialized';this.poseCache=new Map();this.embedder=null;this.embedderPromise=null;this.delegate='uninitialized';this.frameCache=new Map();this.lastTime=0;this.segmentLastTime=0;this.segmentDelegate='uninitialized';this.running=false;
   }
   get ready(){return !!this.detector;}
   async init() {
@@ -43,7 +45,7 @@ export class PersonAI {
       this.onStatus(`AI ready on ${this.delegate}`);
     }finally{this.running=false;}
   }
-  resetCache(){this.frameCache.clear();}
+  resetCache(){this.frameCache.clear();this.poseCache.clear();}
   async switchToCPU(){
     if(this.delegate==='CPU')throw new Error('CPU detector also failed');
     this.detector?.close();this.detector=null;this.delegate='uninitialized';
@@ -114,6 +116,75 @@ export class PersonAI {
       this.segmentDelegate='CPU';
       return perform();
     }
+  }
+  // PoseLandmarker outputs a separate foreground probability mask for each pose.
+  // The returned masks are copied in the callback before the native frame is freed.
+  async initPose(){
+    if(this.pose)return this.pose;
+    if(this.posePromise)return this.posePromise;
+    this.posePromise=(async()=>{
+      const pkg=await import(`${PACKAGE}/vision_bundle.mjs`);
+      const vision=await pkg.FilesetResolver.forVisionTasks(`${PACKAGE}/wasm`);
+      let lastError;
+      for(const delegate of ['GPU','CPU']){
+        try{
+          this.pose=await pkg.PoseLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:MODELS.pose,delegate},runningMode:'VIDEO',numPoses:5,outputSegmentationMasks:true,minPoseDetectionConfidence:.35,minPosePresenceConfidence:.35});
+          this.poseDelegate=delegate;this.onStatus(`Person-instance masks ready (${delegate})`);return this.pose;
+        }catch(e){lastError=e;}
+      }
+      throw new Error('Per-person pose segmentation unavailable: '+lastError?.message);
+    })().finally(()=>{this.posePromise=null;});
+    return this.posePromise;
+  }
+  async poseInstances(source,t,fps=30){
+    const idx=Math.round(t*fps);if(this.poseCache.has(idx))return this.poseCache.get(idx);
+    await this.initPose();
+    const w=source.videoWidth||source.naturalWidth||source.width||512,h=source.videoHeight||source.naturalHeight||source.height||288;
+    const W=Math.min(512,w),H=Math.max(1,Math.round(W*h/w));
+    const cv=document.createElement('canvas');cv.width=W;cv.height=H;
+    cv.getContext('2d').drawImage(source,0,0,W,H);
+    this.poseLastTime=Math.max((this.poseLastTime||0)+1,Math.round(performance.now()));
+    let instances=[];
+    const read=()=>{
+      this.pose.detectForVideo(cv,this.poseLastTime,result=>{
+        instances=(result.landmarks||[]).map((landmarks,i)=>{
+          const visible=landmarks.filter(p=>(p.visibility??1)>.28&&p.x>=0&&p.x<=1&&p.y>=0&&p.y<=1);
+          if(visible.length<5)return null;
+          const bx=Math.min(...visible.map(p=>p.x)),by=Math.min(...visible.map(p=>p.y));
+          const right=Math.max(...visible.map(p=>p.x)),bottom=Math.max(...visible.map(p=>p.y));
+          const mask=result.segmentationMasks?.[i];
+          return {box:{x:bx,y:by,w:right-bx,h:bottom-by},landmarks,
+            mask:mask?{width:mask.width,height:mask.height,data:new Float32Array(mask.getAsFloat32Array())}:null};
+        }).filter(Boolean);
+      });
+    };
+    try{read();}catch(error){
+      if(this.poseDelegate!=='GPU')throw error;
+      this.pose?.close();this.pose=null;this.poseDelegate='uninitialized';await this.initPose();
+      this.poseLastTime++;read();
+    }
+    this.poseCache.set(idx,instances);
+    if(this.poseCache.size>4)this.poseCache.delete(this.poseCache.keys().next().value);
+    return instances;
+  }
+  // An optional CNN appearance descriptor for ambiguous crossings. Color
+  // histograms remain available when this model cannot initialize on a phone.
+  async embedPerson(source,box){
+    if(!this.embedder){
+      if(!this.embedderPromise)this.embedderPromise=(async()=>{
+        const pkg=await import(`${PACKAGE}/vision_bundle.mjs`),vision=await pkg.FilesetResolver.forVisionTasks(`${PACKAGE}/wasm`);
+        for(const delegate of ['CPU','GPU']){
+          try{this.embedder=await pkg.ImageEmbedder.createFromOptions(vision,{baseOptions:{modelAssetPath:MODELS.embedder,delegate},runningMode:'IMAGE',l2Normalize:true});break;}catch{}
+        }
+        if(!this.embedder)throw new Error('MobileNet embedder unavailable');
+      })().finally(()=>{this.embedderPromise=null;});
+      await this.embedderPromise;
+    }
+    const cv=document.createElement('canvas');cv.width=cv.height=224;
+    const W=source.videoWidth||source.naturalWidth||source.width||1,H=source.videoHeight||source.naturalHeight||source.height||1;
+    cv.getContext('2d').drawImage(source,box.x*W,box.y*H,Math.max(1,box.w*W),Math.max(1,box.h*H),0,0,224,224);
+    const result=this.embedder.embed(cv),e=result.embeddings?.[0];
+    return e?.floatEmbedding?Array.from(e.floatEmbedding):null;
   }
   async selfCheck(image){
     await this.init();
