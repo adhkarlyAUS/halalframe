@@ -1,5 +1,5 @@
 import {addPoint,clamp,normalizedBox} from '../state.js';
-import {appearanceSignature,appearanceSimilarity,hungarian,associationCost,MultiObjectAssociator,iou,poseBodySignature,poseSimilarity} from './identity.js';
+import {appearanceSignature,appearanceSimilarity,hungarian,associationCost,MultiObjectAssociator,iou,poseBodySignature,poseSimilarity,rankIdentityCandidates,chooseIdentityCandidate} from './identity.js';
 
 // Analysis resolution is user-selectable; short clips default to every source frame.
 export const TRACK_FPS = 30;
@@ -224,18 +224,35 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       const signedDT=at-measuredLast.t;
       const assignments=allPeople.update(video,detections,at);
       const assigned=assignments.find(x=>x.id===targetIdentity);
-      const others=assignments.filter(x=>x.id!==targetIdentity).map(x=>x.box);
-      if(others.length)concealment.otherPeople.push({t:at,boxes:others});
       let match=reacquirePerson(measuredLast,detections,velocity,signedDT,{lostFor:Math.abs(at-measuredLast.t)});
-      if(targetIdentity && assignments.length>1){
+      const expected=predictBox(measuredLast,velocity,signedDT);
+      const ranked=rankIdentityCandidates(video,detections,concealment.identitySignature,expected,ordered[0]);
+      const identityChoice=chooseIdentityCandidate(ranked,{minimumAppearance:.44,minimumScore:.45});
+      if(identityChoice){
+        // A good match to the ORIGINAL appearance outranks a stale Kalman box.
+        // This is especially important 1–3 seconds after two people cross.
+        const candidate=matchPerson(measuredLast,[identityChoice.box],velocity,signedDT);
+        const strong=identityChoice.appearance>.64||ranked.length===1&&identityChoice.appearance>.49;
+        if(candidate||strong){
+          match={...(candidate||{}),box:identityChoice.box,
+            confidence:Math.max(.57,Math.min(.98,.52*identityChoice.appearance+.48*identityChoice.score)),
+            ambiguous:false,reacquired:!candidate};
+          const related=assignments.find(a=>a.box===identityChoice.box);
+          if(related)targetIdentity=related.id;
+        }
+      }else if(targetIdentity&&assignments.length>1){
+        // Avoid an ID swap. Prefer a short conservative gap and ask only if
+        // ambiguity persists, rather than accepting a nearby wrong person.
         if(assigned){
+          const similarity=appearanceSimilarity(concealment.identitySignature,assigned.appearance);
           const candidate=matchPerson(measuredLast,[assigned.box],velocity,signedDT);
-          const sim=appearanceSimilarity(concealment.identitySignature,assigned.appearance);
-          if(candidate&&sim>.27)match={...candidate,ambiguous:sim<.43,confidence:Math.min(candidate.confidence,Math.max(.45,sim))};
-          else match=null; // Ask instead of concealing the wrong person's body.
+          if(candidate&&similarity>.48)match={...candidate,ambiguous:similarity<.56};
+          else match=null;
         }else match=null;
       }
-      if(assigned&&assigned.confidence<.45&&assignments.length>1&&match)match.ambiguous=true;
+      const others=assignments.filter(x=>!match||x.box!==match.box).map(x=>x.box);
+      if(others.length)concealment.otherPeople.push({t:at,boxes:others});
+      if(assigned?.confidence<.35&&assignments.length>1&&match&&!identityChoice)match.ambiguous=true;
       const crossing=!!(match&&others.some(other=>iou(other,match.box)>.08));
       if(crossing)crossings++;
       if(match&&crossing&&concealment.poseSignature&&typeof ai.poseInstances==='function'&&Math.abs(at-lastEmbedTime)>.45){
@@ -258,6 +275,9 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
           }
         }catch{/* Appearance histogram/pose remains as the free fallback. */}
       }
+      // A face/upper-torso-only detection must not shrink or pull the full-body
+      // mask. Keep predicting from the last reliable whole-person observation.
+      if(match&&(match.box.w<ordered[0].w*.78||match.box.h<ordered[0].h*.78))match=null;
       const dt=Math.abs(at-lastProcessedTime);
       lastProcessedTime=at;
       const hadLoss=missedFor>step*.75;
@@ -269,7 +289,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       const cooldown=Math.abs(at-lastReviewTime)>=REVIEW_COOLDOWN_SECONDS;
       let reason=null;
       if(cooldown){
-        if(missedFor>=LOW_CONFIDENCE_SECONDS)reason='Subject lost for over 0.5 seconds';
+        if(missedFor>=LOW_CONFIDENCE_SECONDS && !(ranked.length===1&&ranked[0].appearance>.50))reason='Subject lost for over 0.5 seconds';
         else if(ambiguousFor>=LOW_CONFIDENCE_SECONDS)reason='Overlapping people need a position check';
         else if(weakFor>=LOW_CONFIDENCE_SECONDS)reason='Tracking match uncertain for 0.5 seconds';
         else if(checkEvery&&overdue)reason=`Scheduled check (${checkEvery} seconds)`;
@@ -277,7 +297,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       if(reason){
         lastReviewTime=at;nextPeriodic=(direction>0?at:start+(start-at))+(checkEvery||Infinity);
         onFrame(at,detections);
-        const review=await onReview({time:at,reason,detections,proposed:match?.box||conservativeGap(reliableLast,velocity,at-reliableLast.t),direction,expectedThumb:concealment.thumbnail||null,candidateThumb:typeof document!=='undefined'?personThumbnail(video,match?.box||last):null});
+        const review=await onReview({time:at,reason,detections,proposed:match?.box||conservativeGap(reliableLast,velocity,at-reliableLast.t),direction,expectedThumb:concealment.thumbnail||null,candidateThumb:typeof document!=='undefined'?personThumbnail(video,match?.box||ranked[0]?.box||last):null});
         if(signal?.aborted)throw new DOMException('Tracking cancelled','AbortError');
         if(review.action==='end'){
           if(direction>0)concealment.endTime=at;else concealment.startTime=at;
@@ -314,11 +334,13 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
         if(hadLoss)centreFilter.reset(match.box,at);
         const filtered=moveCentre(match.box,centreFilter.update(match.box,at));
         result=stableBox(reliableLast,filtered,Math.abs(at-reliableLast.t),historySizes,{uncertain,velocity,anchor:sizeAnchor});
-        if(!uncertain&&match.confidence>.58&&(match.box.confidence??1)>.44){
-          // Once a person is positively re-identified, recover their own
-          // dimensions in under 0.3 s; never retain a union grown in a crossing.
-          const w=clamp(match.box.w,Math.max(.005,ordered[0].w*.90),Math.min(1,ordered[0].w*1.28));
-          const h=clamp(match.box.h,Math.max(.005,ordered[0].h*.90),Math.min(1,ordered[0].h*1.28));
+        if(match.confidence>.55&&!match.ambiguous){
+          // No union/size-anchor carry-over after identification. Restrict to
+          // the current detection even on the first frame after separation.
+          // Reject face-only/torso-only detector shrinkage, without carrying
+          // an enlarged crossing/union box into later separated frames.
+          const w=clamp(Math.max(match.box.w,ordered[0].w*.94),.005,1);
+          const h=clamp(Math.max(match.box.h,ordered[0].h*.94),.005,1);
           const cc=center(filtered);
           result=boundBox({x:clamp(cc.x-w/2,0,1-w),y:clamp(cc.y-h/2,0,1-h),w,h});
         }

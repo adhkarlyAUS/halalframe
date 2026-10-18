@@ -114,3 +114,25 @@ export class MultiObjectAssociator {
     return result;
   }
 }
+
+// Explicit target-identity re-acquisition, independent from the last drifting
+// Kalman box. Designed for a selected person in a multi-person scene.
+export function rankIdentityCandidates(source,boxes,reference,predicted,anchorBox){
+  return (boxes||[]).map(box=>{
+    const appearance=appearanceSimilarity(reference,appearanceSignature(source,box));
+    const bc=centre(box),pc=centre(predicted||anchorBox||box);
+    const radius=Math.max(.09,Math.hypot((anchorBox||box).w,(anchorBox||box).h));
+    const distance=Math.hypot(bc.x-pc.x,bc.y-pc.y);
+    const motion=Math.exp(-distance/(radius*1.6));
+    const size=Math.exp(-Math.abs(Math.log(Math.max(EPS,box.w*box.h)/Math.max(EPS,(anchorBox||box).w*(anchorBox||box).h))));
+    const score=(reference?.length?.40*appearance:0)+.32*motion+.23*size+.05*Math.min(1,(box.confidence||.35)/.35)+(reference?.length?0:.40*motion);
+    return {box,appearance,motion,size,score,distance};
+  }).sort((a,b)=>b.score-a.score);
+}
+export function chooseIdentityCandidate(ranked,{minimumAppearance=.46,minimumScore=.42}={}){
+  const best=ranked?.[0],second=ranked?.[1];
+  if(!best||best.score<minimumScore||best.size<.35)return null;
+  if(best.appearance<minimumAppearance)return null;
+  if(second&&best.score-second.score<.045&&best.appearance-second.appearance<.10)return null;
+  return best;
+}

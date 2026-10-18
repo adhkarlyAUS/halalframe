@@ -54,10 +54,17 @@ export function selectTargetInstance(instances,box,referenceSignature=null,sourc
     const q=centre(p.box),distance=Math.hypot(b.x-q.x,b.y-q.y),radius=Math.max(.06,Math.hypot(box.w,box.h));
     const geometry=Math.max(0,1-distance/radius);
     const app=referenceSignature&&source?appearanceSimilarity(referenceSignature,appearanceSignature(source,p.box)):.5;
-    const score=.52*geometry+.27*iou(p.box,box)+.21*app;
+    // More weight on original identity appearance; a distant/background crop
+    // must never beat the selected visible subject merely because it overlaps
+    // a previously inflated tracking rectangle.
+    const score=.39*geometry+.21*iou(p.box,box)+.40*app;
     return {...p,score,appearance:app};
   }).sort((a,b)=>b.score-a.score);
-  return ranked[0]?.score>=.28?ranked[0]:null;
+  const best=ranked[0];
+  if(!best||best.score<.38)return null;
+  if(referenceSignature&&best.appearance<.43)return null;
+  if(ranked.length>1&&best.score-ranked[1].score<.035&&best.appearance<.72)return null;
+  return best;
 }
 export function subtractUnrelatedPeople(mask,rect,videoW,videoH,targetBox,otherBoxes,{margin=.002}={}){
   const side=Math.round(Math.sqrt(mask.length)),out=new Uint8Array(mask);
@@ -74,6 +81,30 @@ export function subtractUnrelatedPeople(mask,rect,videoW,videoH,targetBox,otherB
       // other person immediately after the bounding regions separate.
       if(inOther&&!inTarget)out[y*side+x]=0;
     }
+  }
+  return out;
+}
+// Never let a cached, expanded or feathered mask apply to a second person
+// after the two subjects separate. All coordinates use the current frame.
+export function confineMaskToTarget(mask,rect,W,H,targetBox,{margin=.025}={}){
+  const side=Math.round(Math.sqrt(mask.length));
+  const result=new Uint8Array(mask);
+  const left=Math.max(0,targetBox.x-margin),right=Math.min(1,targetBox.x+targetBox.w+margin);
+  const top=Math.max(0,targetBox.y-margin),bottom=Math.min(1,targetBox.y+targetBox.h+margin);
+  for(let y=0;y<side;y++)for(let x=0;x<side;x++){
+    const u=(rect.x+(x+.5)/side*rect.w)/W,v=(rect.y+(y+.5)/side*rect.h)/H;
+    if(u<left||u>right||v<top||v>bottom)result[y*side+x]=0;
+  }
+  return result;
+}
+// When distinct pose masks exist, suppress a pixel only if another person's
+// probability clearly dominates the target probability. Shared true overlap
+// remains attached to the selected subject.
+export function subtractCompetingInstances(target,others,{margin=.10}={}){
+  const out=new Uint8Array(target);
+  for(const other of others){
+    if(!other||other.length!==out.length)continue;
+    for(let i=0;i<out.length;i++)if(other[i]>out[i]+Math.round(margin*255))out[i]=0;
   }
   return out;
 }
@@ -120,6 +151,14 @@ export class MaskCache {
     const sourceCtx=maskSource.getContext('2d',{willReadFrequently:true});
     sourceCtx.fillStyle='#777';sourceCtx.fillRect(0,0,TEST_SIZE,TEST_SIZE);
     try{sourceCtx.drawImage(source,sx,sy,bw,bh,0,0,TEST_SIZE,TEST_SIZE);}catch{return {fallback:true,reason:'Crop unavailable'};}
+    // Freeze this exact source frame BEFORE the first async model load/inference.
+    // Otherwise playback/tracking may seek the underlying <video> while the
+    // PoseLandmarker initializes, caching a mask of a different person/time.
+    const frameSnapshot=document.createElement('canvas');
+    frameSnapshot.width=Math.min(512,sw);
+    frameSnapshot.height=Math.max(1,Math.round(frameSnapshot.width*sh/sw));
+    try{frameSnapshot.getContext('2d').drawImage(source,0,0,frameSnapshot.width,frameSnapshot.height);}
+    catch{return {fallback:true,reason:'Frame snapshot unavailable'};}
     if(signal?.aborted)throw new DOMException('Cancelled','AbortError');
     // First prefer a separate PoseLandmarker mask for THIS person only.
     // This prevents the multiclass segmenter from expanding to a second
@@ -127,14 +166,19 @@ export class MaskCache {
     let category=null,targetPose=null,poseAvailable=false,instances=[];
     if(c.shape==='outline'||c.shape==='skin'||c.shape==='hair'){
       try{
-        instances=await ai.poseInstances(source,time,project.video.fps);
-        targetPose=selectTargetInstance(instances,b,c.identitySignature||null,source);
+        instances=await ai.poseInstances(frameSnapshot,time,project.video.fps);
+        targetPose=selectTargetInstance(instances,b,c.identitySignature||null,frameSnapshot);
         poseAvailable=!!targetPose?.mask;
       }catch(error){this.lastMessage='Pose instance unavailable: '+error.message;}
     }
     let rawMask=null;
     if(c.shape==='outline'&&poseAvailable){
       rawMask=sampleInstanceMask(targetPose,r,project.video.width,project.video.height);
+      // Per-frame pose masks are the only allowed outline source when multiple
+      // people are in view: never use the all-person multiclass union.
+      const competing=instances.filter(p=>p!==targetPose&&p.mask)
+        .map(p=>sampleInstanceMask(p,r,project.video.width,project.video.height));
+      rawMask=subtractCompetingInstances(rawMask,competing);
     }else{
       try{category=await ai.segmentCrop(maskSource);}catch(error){this.lastMessage=error.message;}
       if(category)rawMask=selectCategories(category.data,c.shape,!!c.includeFace);
@@ -147,20 +191,28 @@ export class MaskCache {
     // If pose masks are unavailable, reject parts of the crop occupied ONLY
     // by separate unselected people. Explicit exclusions are also respected.
     let detections=[];
-    try{detections=await ai.detect(source,time,project.video.fps);}catch{}
+    try{detections=await ai.detect(frameSnapshot,time,project.video.fps);}catch{}
     const exclude=(project.exclusions||[]).filter(tr=>time>=tr.startTime&&time<=tr.endTime).map(tr=>boxAt(tr,time)).filter(Boolean);
     const nearby=(c.otherPeople||[]).reduce((best,sample)=>Math.abs(sample.t-time)<Math.abs((best?.t??1e9)-time)?sample:best,null);
     const trackedOthers=nearby&&Math.abs(nearby.t-time)<.12?nearby.boxes:[];
     const otherBoxes=detections.filter(d=>iou(d,b)<.38).concat(trackedOthers,exclude);
+    // A tracked person may have a larger historical safety box from a crossing.
+    // Once they separate, clamp coverage to the target's CURRENT instance box,
+    // not the full padded/union region. Cache is frame-local to avoid echoes.
+    const currentBox=poseAvailable&&iou(targetPose.box,b)>.05?targetPose.box:b;
+    if(rawMask&&poseAvailable){
+      rawMask=confineMaskToTarget(rawMask,r,project.video.width,project.video.height,currentBox,{margin:.035});
+    }
     if(!rawMask||maskRatio(rawMask)<.05){
       // Strict fallback for the selected person: safe padded box, minus known
       // unrelated non-overlapping people. Never emit an empty mask.
       rawMask=new Uint8Array(TEST_SIZE*TEST_SIZE).fill(255);
-      rawMask=subtractUnrelatedPeople(rawMask,r,project.video.width,project.video.height,b,otherBoxes);
-      if(maskRatio(rawMask)<.05)return {fallback:true,reason:'Instance unavailable; full padded box'};
+      rawMask=confineMaskToTarget(rawMask,r,project.video.width,project.video.height,currentBox,{margin:.018});
+      rawMask=subtractUnrelatedPeople(rawMask,r,project.video.width,project.video.height,currentBox,otherBoxes);
+      if(maskRatio(rawMask)<.05)return {fallback:true,reason:'Selected person lost; review this frame'};
       this.lastMessage='Precise pose not detected — bounded conservative box';
     }else{
-      rawMask=subtractUnrelatedPeople(rawMask,r,project.video.width,project.video.height,b,otherBoxes);
+      rawMask=subtractUnrelatedPeople(rawMask,r,project.video.width,project.video.height,currentBox,otherBoxes);
       if(maskRatio(rawMask)<.05)return {fallback:true,reason:'Selected person mask too small'};
     }
     const feather=Number(c.feather||0),margin=Number(c.safetyMargin||0);
@@ -168,9 +220,14 @@ export class MaskCache {
     const grown=dilateMask(rawMask,TEST_SIZE,TEST_SIZE,radius);
     // Reapply explicit exclusions after dilation to avoid halo bleeding into
     // people the user has explicitly marked as "Don't cover".
-    const constrained=subtractUnrelatedPeople(grown,r,project.video.width,project.video.height,b,otherBoxes);
-    const previous=this.get(c,Math.round(time*project.video.fps)-1);
+    let constrained=subtractUnrelatedPeople(grown,r,project.video.width,project.video.height,currentBox,otherBoxes);
+    if(c.precisionCritical){
+      // Crucial: no previous-frame alpha blending for selected-person masks.
+      // That caused an unrelated person to stay pixelated after separation.
+      constrained=confineMaskToTarget(constrained,r,project.video.width,project.video.height,currentBox,{margin:.045});
+    }
+    const previous=!c.precisionCritical?this.get(c,Math.round(time*project.video.fps)-1):null;
     const stable=previous&&!previous.fallback&&previous.data?smoothMask(constrained,previous.data,.84):constrained;
-    return {fallback:false,data:stable,width:TEST_SIZE,height:TEST_SIZE,reason:poseAvailable?'Per-person pose mask':'Bounded fallback',ratio:maskRatio(rawMask),instance:poseAvailable};
+    return {fallback:false,data:stable,width:TEST_SIZE,height:TEST_SIZE,reason:poseAvailable?'Per-person pose mask':'Target-box fallback',ratio:maskRatio(rawMask),instance:poseAvailable};
   }
 }
