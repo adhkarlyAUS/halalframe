@@ -3,7 +3,7 @@ export const clone = v => structuredClone(v);
 export const makeId = () => globalThis.crypto?.randomUUID?.() || `hf-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 export const seconds = (s) => { const n = Math.max(0,s||0); return `${Math.floor(n/60).toString().padStart(2,'0')}:${(n%60).toFixed(2).padStart(5,'0')}`; };
 export function createProject(video) {
-  return { version: '1.5', video: { duration: Number(video.duration)||0, fps: Number(video.fps)||30, width: video.width, height: video.height, fileName: video.fileName||'', fileSize: video.fileSize||0, fileLastModified: video.fileLastModified||0 }, concealments: [] };
+  return { version: '1.6', video: { duration: Number(video.duration)||0, fps: Number(video.fps)||30, width: video.width, height: video.height, fileName: video.fileName||'', fileSize: video.fileSize||0, fileLastModified: video.fileLastModified||0 }, concealments: [],exclusions: [] };
 }
 export function normalizedBox(b) {
   const x=clamp(b.x,0,1), y=clamp(b.y,0,1);
@@ -20,10 +20,11 @@ export function newConcealment(project, box, t, { label, source='manual' } = {})
 export function migrateProjectEffects(project) {
   if (!project) return {changed:false, project};
   let changed = false;
+  if(!Array.isArray(project.exclusions)){project.exclusions=[];changed=true;}
   for (const c of project.concealments || []) {
     if (c.effect !== 'pixelate' && c.effect !== 'blur') { c.effect='pixelate'; c.strength=Math.max(42,Number(c.strength)||0); changed=true; }
   }
-  if (project.version !== '1.5') { project.version='1.5'; changed=true; }
+  if (project.version !== '1.6') { project.version='1.6'; changed=true; }
   return {changed,project};
 }
 export function addPoint(c, t, box, source='manual', confidence=1) {
@@ -43,7 +44,7 @@ export function boxAt(c,t) {
   const b={}; for(const k of ['x','y','w','h'])b[k]=a[l][k]*(1-alpha)+a[r][k]*alpha;
   return normalizedBox(b);
 }
-export const activeAt = (project,t) => project.concealments.filter(c=>c.startTime-0.00001<=t && c.endTime+0.00001>=t && c.track?.length);
+export const activeAt = (project,t) => project.concealments.filter(c=>c.enabled!==false&&c.startTime-0.00001<=t && c.endTime+0.00001>=t && c.track?.length);
 export class History {
   constructor(limit=70){this.entries=[];this.cursor=-1;this.limit=limit;}
   reset(value){this.entries=[JSON.stringify(value)];this.cursor=0;}

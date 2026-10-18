@@ -1,6 +1,7 @@
 import {createProject,newConcealment,addPoint,boxAt,clamp,clone,History,seconds,saveProject,loadSavedProject,clearSavedProject,migrateProjectEffects} from './state.js';
 import {renderFrame} from './engine/render.js';
 import {MaskCache} from './engine/segmentation.js';
+import {appearanceSignature,iou} from './engine/identity.js';
 import {PersonAI,nearestPerson} from './engine/ai.js';
 import {seekFrame,trackDirection,findAllPeople,personThumbnail} from './engine/tracker.js';
 import {exportPhoto,downloadBlob,exportVideo,estimateSize,shareBlob} from './engine/export.js';
@@ -59,6 +60,7 @@ function refresh({renderOnly=false}={}){
   for(const id of ['delete-mask','track-forward','track-backward','whole-video'])$(id).disabled=!has || (id.startsWith('track')&&kind==='photo');
   $('undo').disabled=!history.canUndo;$('redo').disabled=!history.canRedo;
   if(c){
+    $('mask-enabled').checked=c.enabled!==false;
     $('mask-label').value=c.label;$('effect').value=c.effect;$('shape').value=c.shape;
     $('strength').value=c.strength;$('padding').value=Math.round(c.padding*100);$('padding-label').textContent=Math.round(c.padding*100)+'%';
     $('start-time').value=c.startTime.toFixed(2);$('end-time').value=c.endTime.toFixed(2);
@@ -102,8 +104,8 @@ function scheduleSave(){clearTimeout(saveTimer);saveTimer=setTimeout(()=>savePro
 function updateDirect(fn,{save=false,refreshUI=true}={}){if(!project)return;fn();if(save)snapshot();else if(refreshUI)refresh();else render();}
 function selectMask(id){selectedId=id;refresh();}
 function setTool(mode){tool=mode;input.setMode(mode==='key'?'draw':mode==='draw'?'draw':'select');
-  ['select','draw','key'].forEach(n=>$(`mode-${n}`).classList.toggle('selected',n===mode));
-  $('mode-help').textContent={select:'Tap a person on the paused video. The local AI will suggest a body box.',draw:'Drag directly on the paused video to create a new time-limited region. Drawing does not move the playhead.',key:'Select a region, scrub to a new time, then draw its updated location. The region moves smoothly between keyframes.'}[mode];
+  ['select','draw','key','exclude'].forEach(n=>$(`mode-${n}`).classList.toggle('selected',n===mode));
+  $('mode-help').textContent={select:'Tap a person on the paused video. The local AI will suggest a body box.',draw:'Drag directly on the paused video to create a new time-limited region. Drawing does not move the playhead.',key:'Select a region, scrub to a new time, then draw its updated location. The region moves smoothly between keyframes.',exclude:'Tap someone you do NOT want concealed. The app will track their position and exclude them from unrelated masks.'}[mode];
   hiddenVideo.pause();
 }
 async function openFile(file){
@@ -178,11 +180,33 @@ function onDraw(box){
   }
   snapshot();
 }
+async function excludeTappedPerson(x,y){
+  if(!project||busyController)return;
+  hiddenVideo.pause();const when=currentTime();
+  const controller=beginBusy('Identifying excluded person','Tracking the person you want left visible.');
+  try{
+    const boxes=await ai.detect(media,when,project.video.fps),picked=nearestPerson(boxes,x,y);
+    if(!picked)throw new Error('No person found at that point. Try another frame.');
+    let matching=null;
+    if(kind==='video'){
+      const tracks=scanResults.length?scanResults:await findAllPeople({video:hiddenVideo,project,ai,accuracy:$('tracking-accuracy').value,signal:controller.signal,onProgress:(p,t)=>progress(p,`${Math.round(100*p)}% · ${seconds(t)}`)});
+      matching=tracks.map(tr=>({tr,overlap:iou(boxAt(tr,when)||tr.track[0],picked)})).sort((a,b)=>b.overlap-a.overlap)[0];
+    }
+    const region=matching?.overlap>.10?matching.tr:newConcealment(project,picked,when,{label:'Do not cover',source:'manual'});
+    const exception={id:`exclude-${crypto.randomUUID()}`,label:'Don’t cover this person',track:clone(region.track),startTime:kind==='photo'?0:region.startTime,endTime:kind==='photo'?0:region.endTime};
+    project.exclusions??=[];project.exclusions.push(exception);
+    // Do not simultaneously conceal a near-identical track selected earlier.
+    for(const c of project.concealments){if(iou(boxAt(c,when)||c.track[0],picked)>.50)c.enabled=false;}
+    snapshot();toast('Person marked “Don’t cover”. The other masks will avoid them when separate.');
+  }catch(error){if(error.name!=='AbortError')toast('Could not exclude person: '+error.message);}
+  finally{endBusy();setTool('select');}
+}
 async function onTap(x,y){
   if(fixResolve){const b={x:clamp(x-.09,0,.99),y:clamp(y-.14,0,.99),w:.18,h:.28};onDraw(b);return;}
   if(tool==='key'){toast('Draw a rectangle for the new keyframe.');return;}
   if(tool==='draw'){toast('Drag to draw a rectangle, not just tap.');return;}
   if(!project||busyController){toast('Finish the current operation first.');return;}
+  if(tool==='exclude'){await excludeTappedPerson(x,y);return;}
   hiddenVideo.pause();
   try{
     const controller=beginBusy('Detecting people','The model runs locally after downloading.');
@@ -192,7 +216,7 @@ async function onTap(x,y){
     const b=nearestPerson(aiBoxes,x,y);
     if(!b){toast('No person found at this frame. Use Draw new box.');return;}
     const c=newConcealment(project,b,currentTime(),{label:`Person ${project.concealments.filter(c=>c.label.startsWith('Person')).length+1}`,source:'ai'});
-    c.track[0].confidence=b.confidence;
+    c.track[0].confidence=b.confidence;c.identitySignature=appearanceSignature(media,b);c.precisionCritical=true;c.thumbnail=personThumbnail(media,b);
     project.concealments.push(c);selectedId=c.id;snapshot();toast(`${c.label} selected. Press Track → to follow them.`);
   }catch(e){if(e.name==='AbortError')toast('AI selection cancelled.');else{console.error(e);toast('AI unavailable: '+e.message+'. Manual drawing still works.');}}
   finally{endBusy();}
@@ -213,9 +237,13 @@ function progress(p,text){$('busy-progress').style.width=(clamp(p,0,1)*100).toFi
 function endBusy(){busyController=null;$('busy').classList.add('hidden');}
 function abortAll(){temporaryReveal=false;$('temporary-reveal').classList.add('hidden');busyController?.abort();if(reviewResolve){reviewResolve({action:'end'});reviewResolve=null;hideReview();}if(fixResolve){fixResolve(null);fixResolve=null;}}
 function hideReview(){$('review-modal').classList.add('hidden');}
-async function askTracking({time,reason,detections,proposed,direction}){
+async function askTracking({time,reason,detections,proposed,direction,expectedThumb,candidateThumb}){
   $('busy').classList.add('hidden');
   $('review-modal').classList.remove('hidden');$('review-description').textContent=`At ${seconds(time)}: ${reason}. Confirm, adjust, or stop. The previous region remains covered until you choose.`;
+  const thumbs=$('review-identity-thumbs');if(thumbs){thumbs.classList.toggle('hidden',!expectedThumb&&!candidateThumb);
+    if(expectedThumb)$('review-target-thumb').src=expectedThumb;
+    if(candidateThumb)$('review-candidate-thumb').src=candidateThumb;
+  }
   try{$('review-shot').src=canvas.toDataURL('image/jpeg',.7);}catch{$('review-shot').removeAttribute('src');}
   const action=await new Promise(resolve=>{reviewResolve=resolve;});
   reviewResolve=null;hideReview();
@@ -260,15 +288,29 @@ async function runScan(coverAll=false){
   finally{trackingActive=false;endBusy();}
 }
 function showScan(){const list=$('scan-list');list.replaceChildren();$('scan-all').checked=true;
-  if(!scanResults.length){const p=document.createElement('p');p.textContent='No person tracks found. You can still draw a region manually.';list.append(p);}
-  for(const tr of scanResults){const label=document.createElement('label');label.className='scan-person';
-    const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.value=tr.id;
+  if(!scanResults.length){const p=document.createElement('p');p.textContent='No people detected. You can still draw a selection manually.';list.append(p);}
+  for(const tr of scanResults){const row=document.createElement('div');row.className='scan-person';
     const thumb=document.createElement('img');thumb.className='thumb';thumb.alt=tr.label+' at initial detection';thumb.src=tr.thumbnail;
-    const info=document.createElement('div');const name=document.createElement('strong');name.textContent=tr.label;const sub=document.createElement('span');sub.className='dim';sub.textContent=`${seconds(tr.startTime)}–${seconds(tr.endTime)} · ${tr.track.length} samples${tr.reviewGaps?.length?' · Review bridged gap':''}`;info.append(name,sub);label.append(cb,thumb,info);list.append(label);
+    const info=document.createElement('div');const name=document.createElement('strong');name.textContent=tr.label;
+    const sub=document.createElement('span');sub.className='dim';sub.textContent=`${seconds(tr.startTime)}–${seconds(tr.endTime)} · ${tr.track.length} positions`;info.append(name,sub);
+    const group=document.createElement('div');group.className='choice-group';
+    for(const [value,caption] of [['cover','Cover'],['exclude','Don’t cover'],['skip','Skip']]){
+      const label=document.createElement('label'),input=document.createElement('input');input.type='radio';input.name='choice-'+tr.id;input.value=value;input.checked=value==='cover';label.append(input,document.createTextNode(caption));group.append(label);
+    }
+    info.append(group);row.append(thumb,info);list.append(row);
   }
   $('scan-modal').classList.remove('hidden');
 }
-function applyScan(tracks){if(!project)return;for(const tr of tracks){const c=newConcealment(project,tr.track[0],tr.startTime,{label:`Person ${project.concealments.filter(c=>c.label.startsWith('Person')).length+1}`,source:'ai'});c.track=clone(tr.track);c.startTime=tr.startTime;c.endTime=tr.endTime;project.concealments.push(c);selectedId=c.id;}snapshot();$('scan-modal').classList.add('hidden');}
+function applyScan(tracks,excluded=[]){
+  if(!project)return;
+  for(const tr of tracks){const c=newConcealment(project,tr.track[0],tr.startTime,{label:`Person ${project.concealments.filter(c=>c.label.startsWith('Person')).length+1}`,source:'ai'});
+    c.track=clone(tr.track);c.startTime=tr.startTime;c.endTime=tr.endTime;c.precisionCritical=true;c.identitySignature=tr.identitySignature||null;
+    project.concealments.push(c);selectedId=c.id;
+  }
+  project.exclusions??=[];
+  for(const tr of excluded)project.exclusions.push({id:`exclude-${crypto.randomUUID()}`,label:'Don’t cover '+tr.label,track:clone(tr.track),startTime:tr.startTime,endTime:tr.endTime});
+  snapshot();$('scan-modal').classList.add('hidden');
+}
 function editSelection(field,value){const c=selected();if(!c)return;
   if(field==='effect'&&!['pixelate','blur'].includes(value))value='pixelate';
   if(field==='startTime')value=clamp(Number(value),0,c.endTime);
@@ -306,7 +348,7 @@ $('fps-input').addEventListener('change',e=>{if(!project)return;
   project.video.fps=e.target.value==='auto'?30:Number(e.target.value);
   frameTimes=[];lastMeasuredMediaTime=null;ai.resetCache();snapshot();
 });
-$('mode-select').onclick=()=>setTool('select');$('mode-draw').onclick=()=>setTool('draw');$('mode-key').onclick=()=>setTool('key');
+$('mode-select').onclick=()=>setTool('select');$('mode-draw').onclick=()=>setTool('draw');$('mode-key').onclick=()=>setTool('key');$('mode-exclude').onclick=()=>setTool('exclude');
 $('find-people').onclick=()=>runScan(false);$('cover-everyone').onclick=()=>runScan(true);
 $('track-forward').onclick=()=>runTracking(1);$('track-backward').onclick=()=>runTracking(-1);
 $('cancel-task').onclick=abortAll;
@@ -314,11 +356,18 @@ $('temporary-reveal').onclick=()=>{temporaryReveal=!temporaryReveal;$('temporary
 for(const [id,action] of [['review-continue','continue'],['review-fix','fix'],['review-end','end'],['review-skip','skip']]){
   $(id).onclick=()=>{if(reviewResolve)reviewResolve({action});};
 }
-$('scan-all').onchange=e=>{for(const cb of $('scan-list').querySelectorAll('input[type=checkbox]'))cb.checked=e.target.checked;};
-$('scan-apply').onclick=()=>{const ids=new Set([...$('scan-list').querySelectorAll('input:checked')].map(x=>x.value));applyScan(scanResults.filter(x=>ids.has(x.id)));};
+$('scan-all').onchange=e=>{if(e.target.checked)for(const cb of $('scan-list').querySelectorAll('input[type=radio][value=cover]'))cb.checked=true;};
+$('scan-apply').onclick=()=>{
+  const covered=[],excluded=[];
+  for(const tr of scanResults){const choice=$('scan-list').querySelector(`[name="choice-${tr.id}"]:checked`)?.value||'skip';
+    if(choice==='cover')covered.push(tr);else if(choice==='exclude')excluded.push(tr);
+  }
+  applyScan(covered,excluded);
+};
 $('scan-close').onclick=()=>$('scan-modal').classList.add('hidden');
 $('delete-mask').onclick=deleteMask;$('mask-duplicate').onclick=()=>{duplicateMask();$('mask-menu').classList.add('hidden');};$('mask-delete-menu').onclick=()=>{deleteMask();$('mask-menu').classList.add('hidden');};
 document.addEventListener('pointerdown',e=>{if(!$('mask-menu').classList.contains('hidden')&&!$('mask-menu').contains(e.target))$('mask-menu').classList.add('hidden');});
+$('mask-enabled').onchange=e=>editSelection('enabled',e.target.checked);
 $('mask-label').onchange=e=>editSelection('label',e.target.value.trim()||'Region');
 $('effect').onchange=e=>editSelection('effect',e.target.value);
 $('shape').onchange=e=>editSelection('shape',e.target.value);
@@ -366,7 +415,7 @@ $('info-content').addEventListener('click',e=>{
 });
 function showInfo(type){const title={about:'About HalalFrame',ruling:'The Amanah of Sharing',help:'How HalalFrame works',social:'Getting videos from social media'}[type];$('info-title').textContent=title;
   const content={
-    about:`<h3>Developed by FD Abu Ishaq and Muzzy</h3><p>We are software developers creating practical, beneficial software to serve the Muslim Ummah, in shaa Allah. HalalFrame is built to help people conceal visual content before sharing it, with privacy, simplicity, and accessibility at its heart.</p><h3>Special thanks</h3><p>Special thanks to my friend Mustapha (Muzzy) for inspiring this idea. I ask Allah that the reward for this goes to him and to all the muwahhideen who are trying to uphold the seriousness of forbidding munkar and encouraging goodness.</p><p>All media editing takes place in the browser. No sign-in, app server or uploaded media. AI model files download from the model provider on first use.</p><h3>Discover Adhkarly</h3><p>Daily adhkar, Qur'an and Islamic learning. Our download links will be added later.</p><p><button id="info-install-link" class="text-btn">Install HalalFrame ↗</button> · <button id="info-disclaimer-link" class="text-btn">View disclaimer again ↗</button> · <button id="info-social-link" class="text-btn">Getting social media videos ↗</button></p>`,
+    about:`<h3>Developed by Adhkarly Team</h3><p>We are software developers creating practical, beneficial software to serve the Muslim Ummah, in shaa Allah. HalalFrame is built to help people conceal visual content before sharing it, with privacy, simplicity, and accessibility at its heart.</p><h3>Special thanks</h3><p>Special thanks to my friend Mustapha (Muzzy) for inspiring this idea. I ask Allah that the reward for this goes to him and to all the muwahhideen who are trying to uphold the seriousness of forbidding munkar and encouraging goodness.</p><p>All media editing takes place in the browser. No sign-in, app server or uploaded media. AI model files download from the model provider on first use.</p><h3>Discover Adhkarly</h3><p>Daily adhkar, Qur'an and Islamic learning. Our download links will be added later.</p><p><button id="info-install-link" class="text-btn">Install HalalFrame ↗</button> · <button id="info-disclaimer-link" class="text-btn">View disclaimer again ↗</button> · <button id="info-social-link" class="text-btn">Getting social media videos ↗</button></p>`,
     ruling:`<p><strong>Before you share, remember Allah.</strong> A photo or video can be forwarded and viewed far beyond the original audience. We should avoid knowingly encouraging or spreading sin.</p><blockquote>“Whoever calls to misguidance will have a burden of sin like that of those who follow him, without that detracting from their sins in the slightest.” <strong>— Sahih Muslim 2674</strong></blockquote><p>Allah warns about those who love immorality to spread among the believers (Surah An-Nur 24:19). Not every accidental appearance necessarily makes someone responsible for every later viewer's actions; intention, knowledge and what is being promoted matter.</p><p><strong>AI can make mistakes.</strong> Check your complete edited media before sharing. This app does not guarantee that all exposed awrah has been found.</p>`,
     social:`<p><strong>HalalFrame does not download videos from YouTube, Facebook, Instagram or TikTok links.</strong></p><p>When a creator and the platform permit saving a video, use that app's own Save or Download option, or use footage you recorded yourself. Then open the saved media in HalalFrame using <strong>Choose a file</strong>.</p><p>On Android, install HalalFrame as an app. From Gallery or Files, tap <strong>Share → HalalFrame</strong> to send a video or image file directly into the editor. Some apps share only a webpage link instead of the media file, which cannot be imported automatically.</p><p>Respect the creator's permissions and applicable platform terms. No external downloader links are used.</p>`,
     help:`<p><strong>1.</strong> Open a local video or photo. <strong>2.</strong> Pause at the moment you want. Tap a person to load the AI detector, or choose “Draw new box” and drag on the video. <strong>3.</strong> A new region starts at that moment and lasts three seconds by default. Move the scrubber to a later moment, select “Add keyframe” and draw its new position. <strong>4.</strong> Tap Track → or ← to let AI follow it, stopping to ask you when uncertain. <strong>5.</strong> Review the full timeline before sharing.</p><p>Photo JPG/PNG export is included. Video MP4/audio output uses hardware WebCodecs when available and single-thread FFmpeg or WebM fallback, depending on browser support; check the result before sharing.</p>`
