@@ -7,7 +7,7 @@ export class AudioPanel{
   constructor({getFile,getTime,getVideo,onChange=()=>{},toast=()=>{}}){
     Object.assign(this,{getFile,getTime,getVideo,onChange,toast});
     this.mode='original';this.quality='quick';this.cleaned=null;this.original=null;this._rejectJob=null;
-    this.worker=null;this.context=null;this.source=null;this.musicCheck=null;this.busy=false;this.cancelling=false;this.maxProgress=0;
+    this.worker=null;this.verificationController=null;this.context=null;this.source=null;this.musicCheck=null;this.busy=false;this.cancelling=false;this.maxProgress=0;
     this.bind();this.updateUI();
   }
   bind(){
@@ -80,6 +80,7 @@ export class AudioPanel{
     if(this.busy)return;
     this.mode='clean';$('audio-mode').value='clean';this.busy=true;this.cleaned=null;this.musicCheck=null;this.maxProgress=0;this.stopPreview();this.updateUI();
     const since=performance.now();
+    let retryBest=false;
     try{
       const original=await this.decode();
       if(original.duration>MEDIA_LIMIT_SECONDS)throw new Error(`On-device music cleaning is limited to ${MEDIA_LIMIT_SECONDS} seconds to protect phone memory. You can still use Keep original or No audio for longer videos.`);
@@ -142,23 +143,59 @@ export class AudioPanel{
         worker.onmessageerror=()=>fail(new Error('Audio worker sent a message the browser could not decode. Try again or select No audio.'));
         armTimer(); // Also cover the period before the ready handshake.
       });
-      const decoded=output.channels.map(b=>new Float32Array(b));
+      // Release the large ONNX worker before MediaPipe AudioClassifier loads.
+      this.worker?.terminate();this.worker=null;
+      let decoded=output.channels.map(b=>new Float32Array(b));
+      if(output.studioWarning){
+        this.quality='best';$('audio-quality').value='best';
+        this.toast(output.studioWarning);
+      }
+      this.verificationController=new AbortController();
+      const originalChannels=Array.from({length:Math.min(2,original.numberOfChannels)},(_,i)=>original.getChannelData(i));
+      try{
+        $('audio-progress-text').textContent='Music check · loading YAMNet on this device…';
+        $('audio-progress').style.width='97%';
+        const {verifyMusic,smoothRiskGate}=await import('../audio/music-check.js?v='+window.APP_VERSION);
+        const verify=async()=>verifyMusic({original:originalChannels,cleaned:decoded,rate:original.sampleRate,
+          strict:$('audio-strict').checked,signal:this.verificationController.signal,
+          onProgress:f=>{$('audio-progress-text').textContent=`Music check · ${Math.round(f*100)}% of audio analysed`;
+            $('audio-progress').style.width=(97+f*2).toFixed(1)+'%';}});
+        this.musicCheck=await verify();
+        const strict=$('audio-strict').checked;
+        const risk=(this.musicCheck.blocks||[]).filter(b=>b.state==='risk'&&(strict||b.speech<.34));
+        if(risk.length){
+          decoded=smoothRiskGate(decoded,original.sampleRate,risk);
+          $('audio-progress-text').textContent=`Muted ${risk.length} suspicious interval(s). Rechecking…`;
+          this.musicCheck=await verify();this.musicCheck.extraMuted=risk.length;
+        }
+      }catch(error){
+        if(error.name==='AbortError')throw error;
+        this.musicCheck={verified:false,remainingRisk:null,
+          blocks:[{start:0,end:original.duration,before:0,after:1,speech:0,state:'risk'}],
+          error:'YAMNet on-device check unavailable: '+error.message};
+      }finally{this.verificationController=null;}
       const result=new AudioBuffer({numberOfChannels:decoded.length,length:decoded[0].length,sampleRate:output.sampleRate});
       decoded.forEach((ch,index)=>result.copyToChannel(ch,index));
       this.cleaned=result;
-      this.musicCheck=output.musicCheck||{verified:false,blocks:[],error:'No independent music verification'};
       this.showMusicReport();
-      $('audio-progress-text').textContent=`Voice processed ${result.duration.toFixed(1)}s · speech ${output.speechPercent}% · Music check ${this.musicCheck.verified?'passed':'needs your review'}`;
-      $('audio-progress').style.width='100%';this.toast('Cleaned audio ready. Compare Original and Cleaned before exporting.');
+      const qualityNote=output.studioWarning?' · Studio fell back to Best':'';
+      $('audio-progress-text').textContent=`Voice ${result.duration.toFixed(1)}s · speech ${output.speechPercent}% · Music check ${this.musicCheck.verified?'passed':'needs review'}${qualityNote}`;
+      $('audio-progress').style.width='100%';this.toast('Audio ready. Listen to A/B preview and inspect the music-risk strip.');
       this.checkCache();
     }catch(e){
       this.cleaned=null;this.musicCheck=null;
-      if(!this.cancelling){this.toast('Audio cleaning could not finish: '+e.message);$('audio-progress-text').textContent=e.message;}
+      if(!this.cancelling&&this.quality==='studio'){
+        retryBest=true;this.quality='best';$('audio-quality').value='best';
+        this.toast('Studio timed out or failed; automatically trying Best MDX-Net. '+e.message);
+        $('audio-progress-text').textContent='Studio unavailable · automatically switching to Best…';
+      }else if(!this.cancelling){this.toast('Audio cleaning could not finish: '+e.message);$('audio-progress-text').textContent=e.message;}
     }finally{
       this.worker?.terminate();this.worker=null;this._rejectJob=null;this.busy=false;this.cancelling=false;this.updateUI();
+      if(retryBest)queueMicrotask(()=>this.process());
     }
   }
   cancel(){
+    this.verificationController?.abort();
     if(this.worker){this.cancelling=true;this.worker.terminate();this.worker=null;this._rejectJob?.(new DOMException('Audio processing cancelled','AbortError'));this._rejectJob=null;}
     this.busy=false;$('audio-progress-text').textContent='Processing cancelled; no cleaned output was saved.';
     this.updateUI();

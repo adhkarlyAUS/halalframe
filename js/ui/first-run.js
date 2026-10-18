@@ -5,7 +5,7 @@ const $=id=>document.getElementById(id);
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const SLIDES=[
   {label:'WELCOME',symbol:'',title:'Welcome to HalalFrame',description:'A simple, private way to conceal people and regions in photos and videos.'},
-  {label:'HOW IT WORKS',symbol:'steps',title:'Tap a person. Track. Export.',description:'Pause and tap a person, track their movement, inspect the timeline, then export your concealed media.'},
+  {label:'HOW IT WORKS',symbol:'steps',title:'Tap a person. Track. Export.',description:'Swipe to see each step. Tap a person, track their movement, inspect the timeline, then export.'},
   {label:'YOUR PRIVACY',symbol:'privacy',title:'Everything stays on your phone',description:'No sign-in, no server and no uploaded media. Your videos and photos are processed in your browser. AI model files download on the first run.'},
   {label:'IMPORTANT DISCLAIMER',symbol:'!',title:'Before you begin',description:'Please understand the limitations of automatic concealment.'}
 ];
@@ -22,16 +22,23 @@ export function initFirstRun({initAI=async()=>{},onAIReady=()=>{},onReady=()=>{}
   function showSlide(index){
     step=Math.max(0,Math.min(SLIDES.length-1,index));
     const data=SLIDES[step];
+    $('onboarding').querySelector('.onboarding-panel').classList.toggle('step-welcome',step===0);
     $('onboard-step-label').textContent=`${data.label} · ${step+1} OF 4`;
     $('onboard-title').textContent=data.title;
     const visual=$('onboard-visual');visual.replaceChildren();visual.classList.toggle('is-steps',step===1);visual.classList.toggle('hidden',step===0||step===3);
     if(step===1){
-      for(const [file,alt] of [['tap-person.svg','Tap a person'],['track-person.svg','Follow their motion'],['export-video.svg','Save and share']]){
-        const img=document.createElement('img');img.src='assets/onboarding/'+file;img.alt=alt;img.className='onboard-illustration';visual.append(img);
+      for(const [file,alt] of [['tap-person.svg','Tap a person'],['track-person.svg','Track their movement'],['export-video.svg','Export and share']]){
+        const card=document.createElement('figure');card.className='onboard-step-card';
+        const img=document.createElement('img');img.src='assets/onboarding/'+file;img.alt=alt;img.className='onboard-illustration';
+        const label=document.createElement('figcaption');label.textContent=alt;card.append(img,label);visual.append(card);
       }
-    }else if(step===2){const lock=document.createElement('span');lock.className='onboard-privacy-symbol';lock.textContent='⌁';lock.setAttribute('aria-label','Private processing');visual.append(lock);}
+    }else if(step===2){
+      const shield=document.createElement('img');shield.src='assets/onboarding/privacy-shield.svg';
+      shield.alt='A phone protected by a shield and padlock';shield.className='onboard-privacy-illustration';visual.append(shield);
+    }
     
     $('onboard-description').textContent=data.description;
+    if(step===1)visual.scrollLeft=0;
     $('onboard-disclaimer').classList.toggle('hidden',step!==3);$('onboard-description').classList.toggle('onboard-centered',step===2);
     $('onboard-dots').replaceChildren();
     for(let i=0;i<SLIDES.length;i++){
@@ -65,11 +72,13 @@ export function initFirstRun({initAI=async()=>{},onAIReady=()=>{},onReady=()=>{}
     setGate(true);
     const splash=$('splash-screen'),status=$('splash-status');
     const begin=performance.now();
-    status.textContent='App · loading editor…';$('splash-progress').style.width='18%';
+    const stages=[...document.querySelectorAll('#splash-stages span')];
+    const stage=index=>stages.forEach((el,i)=>{el.classList.toggle('current',i===index);el.classList.toggle('done',i<index);});
+    stage(0);status.textContent='App · loading editor…';$('splash-progress').style.width='18%';
     // AI loading starts for real here; the splash has an indeterminate bar and
     // does not pretend that its animation measures downloaded bytes.
-    const bootstrap=Promise.resolve().then(()=>{status.textContent='AI models · preparing on-device detection…';$('splash-progress').style.width='56%';return initAI();}).then(()=>{
-      onAIReady();$('splash-progress').style.width='100%';$('splash-progress').classList.add('complete');
+    const bootstrap=Promise.resolve().then(()=>{stage(1);status.textContent='AI models · preparing on-device detection…';$('splash-progress').style.width='56%';return initAI();}).then(()=>{
+      onAIReady();stage(2);$('splash-progress').style.width='100%';$('splash-progress').classList.add('complete');
       return 'ready';
     },err=>{
       console.warn('AI initialization unavailable; manual editing still works:',err);
@@ -79,7 +88,9 @@ export function initFirstRun({initAI=async()=>{},onAIReady=()=>{},onReady=()=>{}
     if(outcome==='failed')status.textContent='AI unavailable. Manual tools are ready.';
     if(outcome==='loading')status.textContent='AI continues loading in the background…';
     if(outcome==='ready')status.textContent='Ready · private editing on your device';
-    await delay(Math.max(0,650-(performance.now()-begin)));
+    // Never vanish instantly on a fast/cached load. Allow the lime frame
+    // animation and all loading stages to be seen for at least 1.85 seconds.
+    await delay(Math.max(0,1850-(performance.now()-begin)));
     splash.classList.add('leaving');await delay(240);splash.classList.add('hidden');
     if(accepted())finish();else openOnboarding({at:0});
   }
