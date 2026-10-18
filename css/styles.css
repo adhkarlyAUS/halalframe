@@ -80,3 +80,25 @@
  .splash-logo,.splash-progress{animation:none!important}.splash-progress{width:65%;transform:none}
  .splash-screen,.onboard-dot{transition:none!important}
 }
+
+/* v1.5 — deliberate low-clutter audio workspace and install controls */
+.editor-tabs{grid-column:1/-1;display:flex;gap:6px;background:#202521;border:1px solid #374036;border-radius:14px;padding:5px;margin-bottom:-3px}
+.editor-tab{flex:1;border:0;border-radius:10px;padding:11px 14px;background:transparent;color:#aeb8af;font-size:13px;font-weight:700;cursor:pointer;transition:background .15s,color .15s}
+.editor-tab.active{background:#b8f451;color:#172018}.editor-tab:disabled{opacity:.45;cursor:not-allowed}
+.audio-panel{border-color:#516844;background:linear-gradient(180deg,#252c26,#222725)}
+.audio-panel h3{margin:9px 0 13px}.audio-panel .field{margin:13px 0}
+.audio-warning{font-size:12px;line-height:1.65;color:#e7dfbd;background:#343023;border:1px solid #70603f;border-radius:12px;padding:12px;margin:12px 0}
+.audio-strict{font-size:12px;line-height:1.45;margin:10px 0!important}
+.audio-export-summary{font-size:12px;color:#b8f451;font-weight:680;margin:10px 0;padding:9px 12px;background:#1d291c;border:1px solid #4e6341;border-radius:9px}
+.audio-progress-wrap{margin:12px 0}.audio-progress-wrap .progress-track{height:7px;background:#394039;border-radius:10px;overflow:hidden}
+.audio-progress-wrap .progress-fill{height:100%;width:0%;background:#b8f451;transition:width .15s}
+.audio-preview-control{margin-top:15px;padding:14px 11px;background:#1b211d;border:1px solid #475347;border-radius:12px;font-size:12px}
+.audio-buttons{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}.audio-buttons .btn{flex:1;padding:8px 7px;white-space:nowrap}
+.clear-all{border-color:#90ad71!important;background:#253026!important;color:#e8ffce!important;font-size:11px!important;letter-spacing:.02em;font-weight:760!important}
+.clear-all:hover{background:#354b32!important}
+[data-visual-settings].hidden{display:none!important}
+@media(max-width:960px){.editor-tabs{grid-column:1/-1}}
+@media(max-width:620px){.editor-tabs{width:100%}.editor-tab{font-size:12px}.clear-all{width:100%}.audio-buttons .btn{font-size:11px!important}}
+
+/* Audio strength is a three-stop tactile slider, not an advanced codec setting. */
+#audio-strength{width:100%;accent-color:#b8f451;margin:0.45rem 0 0.2rem;min-height:28px}.strength-marks{display:flex;justify-content:space-between;gap:8px;color:#b4baba;font-size:.75rem;margin-bottom:.8rem}.strength-marks span:nth-child(2){text-align:center}.strength-marks span:last-child{text-align:right}
