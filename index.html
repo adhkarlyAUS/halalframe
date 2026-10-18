@@ -3,9 +3,25 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#17191b"><meta name="description" content="HalalFrame by Adhkarly — private, on-device video concealment editor.">
-<title>HalalFrame v1.2 — An Adhkarly Product</title>
-<link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="assets/icon-192.png">
-<link rel="icon" href="assets/logo.png" type="image/png"><link rel="stylesheet" href="css/styles.css">
+<title>HalalFrame v1.3 — An Adhkarly Product</title>
+<link rel="apple-touch-icon" href="assets/icon-192.png">
+<link rel="icon" href="assets/logo.png" type="image/png">
+<script>
+// The ONE release constant: CSS, manifest, entry module, transitive imports and
+// service-worker registration all derive their cache-busting URLs from here.
+const APP_VERSION='1.3';window.APP_VERSION=APP_VERSION;
+(function bootstrapVersionedAssets(){
+  const paths=['js/main.js','js/state.js','js/engine/ai.js','js/engine/render.js',
+    'js/engine/segmentation.js','js/engine/export.js','js/engine/ffmpeg-worker.js',
+    'js/engine/tracker.js','js/ui/canvas-input.js','js/ui/timeline.js'];
+  const imports={};
+  for(const path of paths)imports[new URL(path,document.baseURI).href]=new URL(`${path}?v=${APP_VERSION}`,document.baseURI).href;
+  const map=document.createElement('script');map.type='importmap';map.textContent=JSON.stringify({imports});document.head.append(map);
+  for(const [rel,path] of [['stylesheet','css/styles.css'],['manifest','manifest.json']]){
+    const link=document.createElement('link');link.rel=rel;link.href=`${path}?v=${APP_VERSION}`;document.head.append(link);
+  }
+})();
+</script>
 </head>
 <body>
 <div id="file-warning"><img src="assets/logo.png" alt="HalalFrame"><h1>Open HalalFrame over HTTPS</h1><p>This project uses JavaScript modules, on-device AI and a service worker. Opening <code>index.html</code> directly from a file manager can block those features. Upload the ZIP contents to GitHub Pages or Netlify Drop and open the HTTPS address.</p><p>Your videos and photos will still stay on your device.</p></div>
@@ -22,7 +38,7 @@
     <div class="micro">Your media is not uploaded. The optional AI model downloads from Google the first time you use it. All editing runs in this browser.</div>
   </section>
   <section id="editor" class="editor hidden" aria-label="Video editor">
-    <div class="editor-header"><div><div class="eyebrow">THE EDITOR</div><h2 id="filename">Untitled project</h2><span id="media-details" class="dim"></span><div id="fps-controls" class="fps-controls hidden"><label for="fps-input">Video FPS</label><select id="fps-input"><option value="auto">Auto (30 until measured)</option><option value="24">24</option><option value="25">25</option><option value="30">30</option><option value="50">50</option><option value="60">60</option></select></div></div><button id="new-file" class="btn subtle">Change file</button></div>
+    <div class="editor-header"><div><div class="eyebrow">THE EDITOR</div><h2 id="filename">Untitled project</h2><span id="media-details" class="dim"></span><div id="fps-controls" class="fps-controls hidden"><label for="fps-input">Video FPS</label><select id="fps-input"><option value="auto">Auto (30 until measured)</option><option value="24">24</option><option value="25">25</option><option value="30">30</option><option value="50">50</option><option value="60">60</option></select></div></div><div class="editor-actions"><button id="clear-project" class="btn outline">Clear project</button><button id="new-file" class="btn subtle">Change file</button></div></div>
     <div class="editor-grid">
       <div class="edit-left">
         <div class="viewer-shell"><canvas id="preview" aria-label="Video preview. Tap a person or draw a rectangle using the controls below."></canvas><div class="viewer-badge" id="preview-badge">PREVIEW</div><button id="temporary-reveal" class="reveal-source hidden" type="button">Temporarily show original</button><div id="viewer-empty" class="viewer-empty">Ready</div></div>
@@ -43,12 +59,12 @@
           <div id="no-selection" class="empty-selection">Select or draw a region to edit its settings.</div>
           <div id="selection-panel" class="hidden">
             <label class="field">Label<input id="mask-label" type="text" maxlength="55"></label>
-            <div class="two-cols"><label class="field">Effect<select id="effect"><option value="black">Solid black</option><option value="pixelate">Pixelate</option><option value="blur">Blur</option><option value="brand">HalalFrame</option></select></label><label class="field">Shape<select id="shape"><option value="box">Box</option><option value="outline">Person outline</option><option value="skin">Exposed skin</option><option value="hair">Hair only</option></select></label></div>
+            <div class="two-cols"><label class="field">Effect<select id="effect"><option value="blur">Blur (default)</option><option value="black">Solid black</option><option value="pixelate">Pixelate</option><option value="brand">HalalFrame (selected area)</option></select></label><label class="field">Shape<select id="shape"><option value="box">Box</option><option value="outline">Person outline</option><option value="skin">Exposed skin</option><option value="hair">Hair only</option></select></label></div>
             <div class="two-cols"><label class="field">Strength<input id="strength" type="range" min="3" max="60" step="1"></label><label class="field">Padding <span id="padding-label">15%</span><input id="padding" type="range" min="0" max="35" step="1"></label></div>
             <div class="two-cols"><label class="field">Feather <span id="feather-label">0px</span><input id="feather" type="range" min="0" max="24" step="1" value="0"></label><label class="field">Safety margin <span id="safety-label">8px</span><input id="safety-margin" type="range" min="0" max="40" step="1" value="8"></label></div>
             <label class="check"><input id="include-face" type="checkbox"> Include face skin when using Skin shape</label>
             <div class="two-cols"><label class="field">Start (s)<input id="start-time" type="number" min="0" step="0.01"></label><label class="field">End (s)<input id="end-time" type="number" min="0" step="0.01"></label></div>
-            <button id="whole-video" class="btn outline small">Apply to whole video</button>
+            <button id="whole-video" class="btn outline small">Apply to whole video</button><label class="check whole-frame-option"><input type="checkbox" id="whole-frame"> Intentionally cover entire frame (within selected time)</label>
             <div class="two-cols"><button id="track-forward" class="btn secondary">Track →</button><button id="track-backward" class="btn secondary">← Track</button></div>
             <label class="field">Ask me every<select id="check-interval"><option value="0">Only when uncertain</option><option value="2">2 seconds</option><option value="5">5 seconds</option></select></label>
           </div>
@@ -73,14 +89,22 @@
   </section>
   <section class="discover-card"><div class="discover-label">ALSO FROM OUR DEVELOPERS</div><div class="discover-wordmark"><span>adhkar</span><span class="discover-ly">ly</span></div><p>Daily adhkar, Qur'an, du'as and Islamic learning — built by the Adhkarly team.</p><div class="discover-actions"><button class="btn subtle" disabled title="App link not configured">Android · Coming soon</button><button class="btn subtle" disabled title="App link not configured">iPhone · Coming soon</button><button class="btn subtle" disabled title="App link not configured">Web · Coming soon</button></div></section>
   <section class="about-grid"><article class="info-card"><h3>Private by design</h3><p>Your photo or video remains in your browser tab. No accounts, servers, API keys or uploaded media. AI models must download once before detection works.</p></article><article class="info-card"><h3>Before you share</h3><p>AI can miss a person, a frame or exposed awrah. Review everything manually. Nothing in this app guarantees religious compliance.</p><button id="ruling-open" class="text-btn">Read the reminder ↗</button></article></section>
-  <footer class="footer"><div>HALALFRAME v1.2 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · Discover Adhkarly (links coming soon)</p></footer>
+  <footer class="footer"><div>HALALFRAME v1.3 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · Discover Adhkarly (links coming soon)</p></footer>
 </main>
+<div id="update-banner" class="update-banner hidden" role="status" aria-live="polite">
+  <span>Update ready — tap to reload</span><button type="button" id="update-reload" class="btn primary small">Reload</button>
+</div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div id="busy" class="busy hidden" role="status" aria-live="polite"><div class="busy-inner"><div class="spinner"></div><h3 id="busy-title">Processing</h3><div id="busy-copy" class="dim">Please wait…</div><div class="progress-track"><div id="busy-progress" class="progress-fill"></div></div><button id="cancel-task" class="btn outline">Cancel</button></div></div>
 <div id="tutorial" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-label="First-run guide"><div class="modal tutorial-card"><div class="eyebrow lime">HALALFRAME · QUICK START</div><div class="tutorial-art" id="tutorial-art">◎</div><h2 id="tutorial-title">Tap a person</h2><p id="tutorial-text">Pause the video and tap a person to select them, or draw a box.</p><div class="modal-buttons"><button id="tutorial-skip" class="btn outline">Skip</button><button id="tutorial-next" class="btn primary">Next →</button></div></div></div>
+<div id="restore-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="restore-title">
+  <div class="modal"><div class="eyebrow lime">SAVED PROJECT FOUND</div><h2 id="restore-title">Restore previous edits for this video?</h2>
+  <p id="restore-description">The original video is never stored. Previous concealments will only be used if you choose Restore.</p>
+  <div class="modal-buttons"><button id="restore-yes" class="btn primary">Restore</button><button id="restore-fresh" class="btn outline">Start fresh</button></div></div>
+</div>
 <div id="review-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="review-title"><div class="modal"><div class="eyebrow lime">TRACKING NEEDS YOUR HELP</div><h2 id="review-title">Check this frame</h2><p id="review-description"></p><img id="review-shot" alt="Current video frame for tracking review" class="review-image"><div class="modal-buttons"><button id="review-continue" class="btn primary">Keep going</button><button id="review-fix" class="btn secondary">Fix box</button><button id="review-end" class="btn outline">End concealment here</button><button id="review-skip" class="btn subtle">Skip ahead</button></div></div></div>
 <div id="scan-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="scan-title"><div class="modal scan-modal"><div class="section-head"><h2 id="scan-title">People found</h2><button id="scan-close" class="icon-btn" aria-label="Close">×</button></div><p>Select people to conceal. IDs are estimated and may change when people cross. Review the result.</p><label class="check"><input type="checkbox" id="scan-all" checked> Cover everyone found</label><div id="scan-list" class="scan-list"></div><button id="scan-apply" class="btn primary block">Conceal selected people</button></div></div>
 <div id="info-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="info-title"><div class="modal"><div class="section-head"><h2 id="info-title">Before you share</h2><button id="info-close" class="icon-btn" aria-label="Close">×</button></div><div id="info-content" class="info-copy"></div></div></div>
 <div id="mask-menu" class="menu hidden"><button id="mask-duplicate">Duplicate region</button><button id="mask-delete-menu">Delete region</button></div>
-<script type="module" src="js/main.js"></script>
+<script type="module">import(`./js/main.js?v=${APP_VERSION}`).catch(err=>{console.error(err);document.getElementById('toast').textContent='Editor failed to load — reload online to update.';document.getElementById('toast').classList.add('show');});</script>
 </body></html>
