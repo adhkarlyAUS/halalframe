@@ -79,9 +79,10 @@ export class AudioPanel{
     if(!this.original.numberOfChannels)throw new Error('The video has no decodable audio. Choose No audio.');
     return this.original;
   }
-  async process(){
-    if(this.busy)return;
-    this.mode='clean';$('audio-mode').value='clean';this.busy=true;this.cleaned=null;this.musicCheck=null;this.maxProgress=0;this.stopPreview();this.updateUI();
+  async process({onProgress=()=>{}}={}){
+    if(this.busy)return false;
+    this.mode='clean';$('audio-mode').value='clean';this.busy=true;this.cleaned=null;this.musicCheck=null;this.lastProcessError=null;this.maxProgress=0;this.stopPreview();this.updateUI();
+    onProgress(0,'Removing music · starting on-device processing…');
     const since=performance.now();
     let retryBest=false;
     try{
@@ -116,7 +117,7 @@ export class AudioPanel{
             // The worker registered its handler and finished module evaluation.
             // Transfer input buffers ONLY after this acknowledgement.
             started=true;armTimer();
-            $('audio-progress-text').textContent='Worker ready · preparing models on this device…';
+            $('audio-progress-text').textContent='Worker ready · preparing models on this device…';onProgress(.03,'Removing music · preparing models…');
             try{worker.postMessage({type:'process',job,channels:ch,sampleRate:original.sampleRate,
               quality:this.quality,strength:['gentle','strong','maximum'][Number($('audio-strength').value)]||'strong',strict:$('audio-strict').checked},transfer);
             }catch(error){fail(new Error('Could not send audio to local worker: '+error.message));}
@@ -137,6 +138,7 @@ export class AudioPanel{
             const secondsElapsed=(performance.now()-since)/1000;
             const eta=this.maxProgress>.12?Math.ceil((secondsElapsed/this.maxProgress)*(1-this.maxProgress)):null;
             $('audio-progress-text').textContent=`${d.detail||d.stage}${eta===null?'':` · ~${eta}s left`}`;
+            onProgress(Math.min(.88,this.maxProgress*.88),'Removing music · '+(d.detail||d.stage));
           }else if(d.type==='delegate'){
             armTimer();$('audio-backend').textContent='Audio AI: '+d.delegate;
           }else if(d.type==='complete')finish(d);
@@ -156,13 +158,13 @@ export class AudioPanel{
       this.verificationController=new AbortController();
       const originalChannels=Array.from({length:Math.min(2,original.numberOfChannels)},(_,i)=>original.getChannelData(i));
       try{
-        $('audio-progress-text').textContent='Music check · loading YAMNet on this device…';
+        $('audio-progress-text').textContent='Music check · loading YAMNet on this device…';onProgress(.90,'Checking for music · loading YAMNet…');
         $('audio-progress').style.width='97%';
         const {verifyMusic,smoothRiskGate}=await import('../audio/music-check.js?v='+window.APP_VERSION);
         const verify=async()=>verifyMusic({original:originalChannels,cleaned:decoded,rate:original.sampleRate,
           strict:$('audio-strict').checked,signal:this.verificationController.signal,
           onProgress:f=>{$('audio-progress-text').textContent=`Music check · ${Math.round(f*100)}% of audio analysed`;
-            $('audio-progress').style.width=(97+f*2).toFixed(1)+'%';}});
+            $('audio-progress').style.width=(97+f*2).toFixed(1)+'%';onProgress(.90+.09*f,'Checking for music · '+Math.round(f*100)+'%');}});
         this.musicCheck=await verify();
         const strict=$('audio-strict').checked;
         const risk=(this.musicCheck.blocks||[]).filter(b=>b.state==='risk'&&(strict||b.speech<.34));
@@ -189,9 +191,9 @@ export class AudioPanel{
       const qualityNote=output.studioWarning?' · Studio fell back to Best':'';
       $('audio-progress-text').textContent=`${actualModel} · ${this.musicCheck.strength} · speech ${output.speechPercent}% · Music check ${this.musicCheck.verified?'passed':'needs review'}${qualityNote}`;
       $('audio-progress').style.width='100%';this.toast('Audio ready. Listen to A/B preview and inspect the music-risk strip.');
-      this.checkCache();
+      this.checkCache();onProgress(1,'Checking for music · report ready');
     }catch(e){
-      this.cleaned=null;this.musicCheck=null;
+      this.cleaned=null;this.musicCheck=null;this.lastProcessError=e;
       if(!this.cancelling&&this.quality==='studio'){
         retryBest=true;this.quality='best';$('audio-quality').value='best';
         this.toast('Studio timed out or failed; automatically trying Best MDX-Net. '+e.message);
@@ -199,8 +201,10 @@ export class AudioPanel{
       }else if(!this.cancelling){this.toast('Audio cleaning could not finish: '+e.message);$('audio-progress-text').textContent=e.message;}
     }finally{
       this.worker?.terminate();this.worker=null;this._rejectJob=null;this.busy=false;this.cancelling=false;this.updateUI();
-      if(retryBest)queueMicrotask(()=>this.process());
     }
+    // The caller can await Studio → Best fallback; do not defer it to a microtask.
+    if(retryBest)return await this.process({onProgress});
+    return !!this.cleaned;
   }
   cancel(){
     this.verificationController?.abort();
