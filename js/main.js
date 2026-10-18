@@ -4,7 +4,9 @@ import {MaskCache} from './engine/segmentation.js';
 import {appearanceSignature,iou} from './engine/identity.js';
 import {PersonAI,nearestPerson} from './engine/ai.js';
 import {seekFrame,trackDirection,findAllPeople,personThumbnail} from './engine/tracker.js';
-import {exportPhoto,downloadBlob,exportVideo,estimateSize,shareBlob} from './engine/export.js';
+import {exportPhoto,downloadBlob,exportVideo,estimateSize,shareBlob,EXPORT_PRESETS} from './engine/export.js';
+import {inspectVideoFile,supportedEncoderChoices,browserDiagnostics,MediaError} from './engine/media-probe.js';
+import {convertSourceToH264} from './engine/conversion.js';
 import {CanvasInput} from './ui/canvas-input.js';
 import {Timeline} from './ui/timeline.js';
 import {activeAt} from './state.js';
@@ -15,7 +17,7 @@ const $=id=>document.getElementById(id);
 let project=null,media=null,kind='video',sourceURL=null,selectedId=null,tool='select',draft=null;
 let busyController=null,reviewResolve=null,fixResolve=null,aiBoxes=[],trackingActive=false,scanResults=[];
 let lastFrameRendered=-1,toastTimer=null,saveTimer=null,frameCounter=0,fpsWindowStart=performance.now(),measuredFPS=0;
-let exportResult=null,sourceFile=null;const requestExportReview=initExportReview();const maskCache=new MaskCache();const maskTasks=new Set();
+let exportResult=null,sourceFile=null,videoProbe=null,pendingConversion=null,lastDiagnostic=null;const requestExportReview=initExportReview();const maskCache=new MaskCache();const maskTasks=new Set();
 let temporaryReveal=false;let seekPending=null,seekRunning=false;let frameTimes=[],lastMeasuredMediaTime=null;const FPS_VALUES=[24,25,30,50,60];
 let hiddenVideo=$('source-video'),canvas=$('preview'),ctx=canvas.getContext('2d',{alpha:false});
 const history=new History();
@@ -108,12 +110,55 @@ function setTool(mode){tool=mode;input.setMode(mode==='key'?'draw':mode==='draw'
   $('mode-help').textContent={select:'Tap a person on the paused video. The local AI will suggest a body box.',draw:'Drag directly on the paused video to create a new time-limited region. Drawing does not move the playhead.',key:'Select a region, scrub to a new time, then draw its updated location. The region moves smoothly between keyframes.',exclude:'Tap someone you do NOT want concealed. The app will track their position and exclude them from unrelated masks.'}[mode];
   hiddenVideo.pause();
 }
+function showCodecWarning(file,probe=null,error=null){
+  pendingConversion=file;videoProbe=probe;
+  const diagnostic=browserDiagnostics(file,probe||{},{errorCode:error?.code||'HF_SOURCE_CODEC',cause:error?.message||'Unsupported source codec'});
+  lastDiagnostic=diagnostic;
+  $('codec-warning').classList.remove('hidden');
+  const codec=probe?.codec||'unknown',bitDepth=probe?.bitDepth||'unknown';
+  $('codec-warning-message').textContent=`This video uses ${codec} (${bitDepth}-bit) or a container Chrome cannot decode. Convert it on your phone to H.264 8-bit SDR, then edit and export. Original videos never leave your device.`;
+  $('codec-warning-error').textContent=error?.message||probe?.unsupportedReason||'';
+}
+function hideCodecWarning(){pendingConversion=null;$('codec-warning').classList.add('hidden');}
+$('convert-file').onclick=async()=>{
+  if(!pendingConversion||busyController)return;
+  const original=pendingConversion,probe=videoProbe;
+  const controller=beginBusy('Converting on-device','Preparing H.264 8-bit compatible video (nothing uploaded).');
+  try{
+    const result=await convertSourceToH264(original,{signal:controller.signal,hdr:(probe?.bitDepth||8)>8||/hvc1|hev1/i.test(probe?.codec||''),
+      onStatus:x=>$('busy-copy').textContent=x,onProgress:x=>progress(x,'Converting to H.264 · '+Math.round(x*100)+'%')});
+    endBusy();hideCodecWarning();if(result.warning)toast(result.warning);
+    await openFile(result.file);
+  }catch(e){
+    endBusy();$('codec-warning-error').textContent=`${e.code||'HF_CONVERT_FAILED'}: ${e.message}`;
+    lastDiagnostic=browserDiagnostics(original,probe||{},{errorCode:e.code||'HF_CONVERT_FAILED',cause:e.details?.cause||e.message});
+    toast('Conversion failed · '+(e.code||'HF_CONVERT_FAILED')+'. See the compatibility card.');
+  }
+};
+$('copy-codec-diagnostic').onclick=()=>navigator.clipboard?.writeText(JSON.stringify(lastDiagnostic,null,2)).then(()=>toast('Diagnostic copied')).catch(()=>toast('Could not copy — use Chrome HTTPS.'));
+$('copy-export-diagnostic').onclick=()=>navigator.clipboard?.writeText(JSON.stringify(lastDiagnostic,null,2)).then(()=>toast('Export diagnostic copied')).catch(()=>toast('Could not copy — use Chrome HTTPS.'));
 async function openFile(file){
   if(!file)return;
-  if(!/^image\//.test(file.type)&&!/^video\//.test(file.type)){toast('Choose an image or video');return;}
+  if(!/^(image|video)\//.test(file.type)){
+    const ext=(file.name.split('.').pop()||'').toLowerCase();
+    const type=({mp4:'video/mp4',mov:'video/quicktime',m4v:'video/mp4',webm:'video/webm',jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',webp:'image/webp'})[ext];
+    if(!type){toast('Choose an image or video');return;}
+    file=new File([file],file.name,{type,lastModified:file.lastModified});
+  }
   clearTimeout(saveTimer);busyController?.abort();if(reviewResolve){reviewResolve({action:'end'});reviewResolve=null;}
   if(sourceURL)URL.revokeObjectURL(sourceURL);
   sourceURL=URL.createObjectURL(file);kind=file.type.startsWith('image/')?'photo':'video';
+  $('export-error').classList.add('hidden');hideCodecWarning();videoProbe=null;
+  if(kind==='video'){
+    try{
+      videoProbe=await inspectVideoFile(file);
+      if(videoProbe?.supported===false){showCodecWarning(file,videoProbe);return;}
+    }catch(e){
+      // Unrecognized MOV structures can still play in HTML5; try the player.
+      console.warn('MP4 inspector',e);videoProbe={codec:'unknown',probeUnavailable:true,fileSize:file.size,probeError:e.message};
+    }
+  }
+
   ai.resetCache();maskCache.clear();aiBoxes=[];selectedId=null;hiddenVideo.pause();
   $('file-input').value='';
   $('filename').textContent=file.name;
@@ -132,7 +177,7 @@ async function openFile(file){
         hiddenVideo.addEventListener('loadeddata',ok,{once:true});hiddenVideo.addEventListener('error',bad,{once:true});
       });
       const d=dims(hiddenVideo);
-      info={duration:Number(hiddenVideo.duration)||0,fps:30,width:d.width,height:d.height,fileName:file.name,fileSize:file.size,fileLastModified:file.lastModified};
+      info={duration:Number(hiddenVideo.duration)||0,fps:videoProbe?.fps||30,width:d.width,height:d.height,fileName:file.name,fileSize:file.size,fileLastModified:file.lastModified,codec:videoProbe?.codec||'unknown',rotation:videoProbe?.rotation||0};
       if(!Number.isFinite(info.duration)||info.duration<=0)throw new Error('The video duration is not available. Try an MP4 file.');
       if(info.duration>180)toast('Videos over 3 minutes may be slow or use substantial memory.');
     }
@@ -162,10 +207,14 @@ async function openFile(file){
     $('video-export').classList.toggle('hidden',kind==='photo');$('photo-export').classList.toggle('hidden',kind!=='photo');
     $('audio-toggle').disabled=kind==='photo';hiddenVideo.muted=false;$('audio-toggle').textContent='🔊';
     $('play').disabled=kind==='photo';for(const id of ['back-sec','back-frame','next-frame','next-sec','scrubber'])$(id).disabled=kind==='photo';
-    refreshEstimate();setTool('select');refresh();$('editor').scrollIntoView({behavior:'smooth',block:'start'});
+    refreshEstimate();void updateEncoderAvailability();setTool('select');refresh();$('editor').scrollIntoView({behavior:'smooth',block:'start'});
     toast('File opened locally. Nothing uploaded.');
-  }catch(e){toast('Unable to open: '+e.message);console.error(e);}
+  }catch(e){
+    if(kind==='video')showCodecWarning(file,videoProbe,e);
+    toast('Unable to open: '+e.message);console.error(e);
+  }
 }
+
 function onDraw(box){
   if(fixResolve){const fix=fixResolve;fixResolve=null;temporaryReveal=false;$('temporary-reveal').classList.add('hidden');setTool('select');fix(box);return;}
   if(!project)return;
@@ -189,7 +238,7 @@ async function excludeTappedPerson(x,y){
     if(!picked)throw new Error('No person found at that point. Try another frame.');
     let matching=null;
     if(kind==='video'){
-      const tracks=scanResults.length?scanResults:await findAllPeople({video:hiddenVideo,project,ai,accuracy:$('tracking-accuracy').value,signal:controller.signal,onProgress:(p,t)=>progress(p,`${Math.round(100*p)}% · ${seconds(t)}`)});
+      const tracks=scanResults.length?scanResults:await findAllPeople({video:hiddenVideo,file:sourceFile,project,ai,accuracy:$('tracking-accuracy').value,signal:controller.signal,onProgress:(p,t)=>progress(p,`${Math.round(100*p)}% · ${seconds(t)}`)});
       matching=tracks.map(tr=>({tr,overlap:iou(boxAt(tr,when)||tr.track[0],picked)})).sort((a,b)=>b.overlap-a.overlap)[0];
     }
     const region=matching?.overlap>.10?matching.tr:newConcealment(project,picked,when,{label:'Do not cover',source:'manual'});
@@ -263,7 +312,7 @@ async function runTracking(direction){
   trackingActive=true;hiddenVideo.pause();
   try{
     await ai.init();
-    await trackDirection({video:hiddenVideo,project,concealment:c,ai,direction,checkEvery:Number($('check-interval').value),accuracy:$('tracking-accuracy').value,signal:controller.signal,
+    await trackDirection({video:hiddenVideo,file:sourceFile,project,concealment:c,ai,direction,checkEvery:Number($('check-interval').value),accuracy:$('tracking-accuracy').value,signal:controller.signal,
       onProgress:(p,t)=>progress(p,`${Math.round(p*100)}% · ${seconds(t)} · ${c.track.length} positions`),
       onFrame:(t,boxes)=>{aiBoxes=boxes;render();},onReview:askTracking});
     toast(`Tracking completed: ${c.track.length} saved positions. Review before sharing.`);
@@ -279,7 +328,7 @@ async function runScan(coverAll=false){
       const boxes=await ai.detect(media,0,project.video.fps);
       scanResults=boxes.map((b,i)=>({id:`person-${i+1}`,label:`Person ${i+1}`,thumbnail:personThumbnail(media,b),track:[{t:0,...b,source:'ai'}],startTime:0,endTime:0}));
     }else{
-      scanResults=await findAllPeople({video:hiddenVideo,project,ai,accuracy:$('tracking-accuracy').value,signal:controller.signal,onProgress:(p,t,count)=>progress(p,`${Math.round(p*100)}% · ${seconds(t)} · ${count} tracks`) });
+      scanResults=await findAllPeople({video:hiddenVideo,file:sourceFile,project,ai,accuracy:$('tracking-accuracy').value,signal:controller.signal,onProgress:(p,t,count)=>progress(p,`${Math.round(p*100)}% · ${seconds(t)} · ${count} tracks`) });
     }
     endBusy();render();
     if(coverAll){applyScan(scanResults);toast(`Added ${scanResults.length} person tracks. Review identity changes.`);}
@@ -421,30 +470,63 @@ function showInfo(type){const title={about:'About HalalFrame',ruling:'The Amanah
     help:`<p><strong>1.</strong> Open a local video or photo. <strong>2.</strong> Pause at the moment you want. Tap a person to load the AI detector, or choose “Draw new box” and drag on the video. <strong>3.</strong> A new region starts at that moment and lasts three seconds by default. Move the scrubber to a later moment, select “Add keyframe” and draw its new position. <strong>4.</strong> Tap Track → or ← to let AI follow it, stopping to ask you when uncertain. <strong>5.</strong> Review the full timeline before sharing.</p><p>Photo JPG/PNG export is included. Video MP4/audio output uses hardware WebCodecs when available and single-thread FFmpeg or WebM fallback, depending on browser support; check the result before sharing.</p>`
   };$('info-content').innerHTML=content[type];$('info-modal').classList.remove('hidden');}
 
+function chosenExportOptions(){return {
+  preset:$('export-preset').value,codec:$('export-codec').value,fps:$('export-fps').value,
+  audioBitrate:$('export-audio-bitrate').value==='auto'?null:Number($('export-audio-bitrate').value),
+  channels:$('export-channels').value,speed:$('export-speed').value,targetMB:Number($('export-target-mb').value)||16
+};}
+async function updateEncoderAvailability(){
+  const supported=await supportedEncoderChoices({width:project?.video.width||1280,height:project?.video.height||720,fps:30});
+  for(const option of $('export-codec').options){option.disabled=supported[option.value]===false;
+    option.title=option.disabled?'This device has no compatible hardware/software WebCodecs encoder':'';}
+  if($('export-codec').selectedOptions[0]?.disabled){$('export-codec').value='h264';toast('Selected codec unsupported on this device; H.264 selected.');}
+  refreshEstimate();
+}
 function refreshEstimate(){
   if(!project||kind!=='video')return;
-  const est=estimateSize(project.video,$('export-preset').value);
-  $('export-estimate').textContent=`${est.width}×${est.height} · approx ${(est.bytes/1024/1024).toFixed(1)} MB · actual size varies with motion`;
+  const selected=chosenExportOptions();
+  $('export-target-wrap').classList.toggle('hidden',selected.preset!=='fit');
+  const est=estimateSize(project.video,selected.preset,{...selected,audioMode:audioPanel.mode});
+  $('export-estimate').textContent=`${est.width}×${est.height} · max ${Math.round(est.fps)} fps · ${Math.round(est.bitRate/1000)} kbps video · estimated ${(est.bytes/1024/1024).toFixed(1)} MB${est.canFit?'':' · TARGET MAY NOT FIT'}. Actual size varies.`;
 }
-$('export-preset').onchange=refreshEstimate;
+for(const id of ['export-preset','export-codec','export-fps','export-audio-bitrate','export-channels','export-target-mb','export-speed'])$(id).addEventListener('input',refreshEstimate);
 async function performVideoExport(){
   if(kind!=='video'||!project||!sourceFile||busyController)return;
   let audioOptions;
-  try{audioOptions=audioPanel.exportOptions();}catch(error){toast(error.message);audioPanel.tab('audio');return;}
-  const controller=beginBusy('Exporting MP4','Rendering every frame on this device. Keep the app open.');
-  const previousTime=currentTime();hiddenVideo.pause();$('export-result').classList.add('hidden');
+  try{audioOptions=await audioPanel.exportOptions();}catch(error){toast(error.message);audioPanel.tab('audio');return;}
+  const options=chosenExportOptions();
+  const controller=beginBusy('Exporting video','Decoding each frame sequentially on this device. Keep the app open.');
+  const previousTime=currentTime();hiddenVideo.pause();$('export-result').classList.add('hidden');$('export-error').classList.add('hidden');
+  const started=performance.now();
   try{
-    const result=await exportVideo({file:sourceFile,project,maskCache,ai,preset:$('export-preset').value,...audioOptions,signal:controller.signal,onProgress:(p,message)=>progress(p,message),onStatus:message=>$('busy-copy').textContent=message});
+    const result=await exportVideo({file:sourceFile,project,maskCache,ai,...options,...audioOptions,signal:controller.signal,
+      onProgress:(p,message)=>progress(p,message),onStatus:message=>$('busy-copy').textContent=message});
     if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
     exportResult={...result,name:`${project.video.fileName.replace(/\.[^.]+$/,'')}-halalframe.${result.format}`};
     $('export-result').classList.remove('hidden');
-    $('export-result-title').textContent=`${result.format.toUpperCase()} ready · ${(result.blob.size/1024/1024).toFixed(1)} MB`;
-    $('export-result-message').textContent=result.warning||`Edited video ready (${audioOptions.audioMode==='none'?'silent':audioOptions.audioMode==='clean'?'cleaned voice':'original soundtrack'}). Review playback before sharing.`;
+    $('export-result-title').textContent=`${result.format.toUpperCase()} ready · ${(result.blob.size/1024/1024).toFixed(1)} MB · ${((performance.now()-started)/1000).toFixed(1)}s`;
+    $('export-result-message').textContent=result.warning||`Edited video ready (${audioOptions.audioMode==='none'?'silent':audioOptions.audioMode==='clean'?'edited/cleaned audio':'original soundtrack'}). Review playback before sharing.`;
     toast('Export finished. Test playback and sound before sharing.');
-  }catch(e){if(e.name==='AbortError')toast('Export cancelled.');else{console.error(e);toast('Export failed: '+e.message);}}
-  finally{endBusy();await seekTo(previousTime);}
+  }catch(e){
+    if(e.name==='AbortError')toast('Export cancelled.');
+    else{
+      console.error(e);
+      const code=e.code||'HF_EXPORT_FAILED';
+      $('export-error').classList.remove('hidden');$('export-error-title').textContent='Export issue · '+code;
+      $('export-error-copy').textContent=e.message+' Try WhatsApp 720p H.264, a shorter source video, or local conversion. Media stays on your device.';
+      $('export-error-code').textContent=videoProbe?`${videoProbe.codec} · ${videoProbe.bitDepth}-bit · ${project.video.width}×${project.video.height}`:'Video codec not identified';
+      lastDiagnostic=browserDiagnostics(sourceFile,videoProbe||project.video,{errorCode:code,cause:e.details?.cause||e.message,
+        settings:options,elapsedSeconds:(performance.now()-started)/1000});
+      toast('Export failed · '+code+'. See diagnostic details under Export.');
+    }
+  }finally{endBusy();await seekTo(previousTime).catch(()=>{});}
 }
-$('mp4-export').onclick=()=>{if(kind==='video'&&project&&sourceFile&&!busyController){try{audioPanel.exportOptions();requestExportReview(performVideoExport);}catch(e){toast(e.message);audioPanel.tab('audio');}}};
+$('mp4-export').onclick=()=>{
+  if(kind==='video'&&project&&sourceFile&&!busyController){
+    if(audioPanel.mode==='clean'&&!audioPanel.cleaned){toast('Process cleaned audio first, or choose No audio.');audioPanel.tab('audio');return;}
+    requestExportReview(performVideoExport);
+  }
+};
 $('download-video').onclick=()=>{if(exportResult)downloadBlob(exportResult.blob,exportResult.name);};
 $('share-video').onclick=async()=>{
   if(!exportResult)return;
