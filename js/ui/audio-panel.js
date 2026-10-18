@@ -6,7 +6,7 @@ const MEDIA_LIMIT_SECONDS=120;
 export class AudioPanel{
   constructor({getFile,getTime,getVideo,onChange=()=>{},toast=()=>{}}){
     Object.assign(this,{getFile,getTime,getVideo,onChange,toast});
-    this.mode='original';this.quality='quick';this.cleaned=null;this.original=null;this._rejectJob=null;
+    this.mode='original';this.quality='quick';this.mutedIntervals=[];this.cleaned=null;this.original=null;this._rejectJob=null;
     this.worker=null;this.verificationController=null;this.context=null;this.source=null;this.musicCheck=null;this.busy=false;this.cancelling=false;this.maxProgress=0;
     this.bind();this.updateUI();
   }
@@ -22,6 +22,9 @@ export class AudioPanel{
     $('audio-preview-original').addEventListener('click',()=>this.preview('original'));
     $('audio-preview-clean').addEventListener('click',()=>this.preview('clean'));
     $('audio-preview-stop').addEventListener('click',()=>this.stopPreview());
+    $('audio-add-mute').addEventListener('click',()=>this.addMuteRange());
+    $('audio-clear-mutes').addEventListener('click',()=>{this.mutedIntervals=[];this.updateMuteUI();this.onChange();});
+    $('audio-mute-risk').addEventListener('click',()=>this.muteAllRisks());
   }
   tab(which){
     const audio=which==='audio';$('tab-visual').classList.toggle('active',!audio);$('tab-audio').classList.toggle('active',audio);
@@ -31,12 +34,12 @@ export class AudioPanel{
     if(!audio)this.stopPreview();
   }
   reset(enabled){
-    this.cancel();this.stopPreview();this.cleaned=null;this.original=null;this.musicCheck=null;this.mode='original';this.quality='quick';
+    this.cancel();this.stopPreview();this.cleaned=null;this.original=null;this.musicCheck=null;this.mutedIntervals=[];this.mode='original';this.quality='quick';
     $('audio-mode').value='original';$('audio-quality').value='quick';$('audio-strength').value='1';$('audio-strict').checked=false;
     $('tab-audio').disabled=!enabled;
     if(!enabled)this.tab('visual');
     const video=this.getVideo();if(video)video.muted=false;
-    this.updateUI();this.checkCache();
+    this.updateUI();this.updateMuteUI();this.checkCache();
   }
   setMode(mode){
     if(!['original','none','clean'].includes(mode))return;
@@ -207,7 +210,8 @@ export class AudioPanel{
   }
   async preview(mode){
     this.stopPreview();try{
-      const sound=mode==='clean'?this.cleaned:await this.decode();
+      const raw=mode==='clean'?this.cleaned:await this.decode();
+      const sound=this.mutedIntervals.length&&raw?this.applyMutes(raw):raw;
       if(!sound)throw new Error('Process cleaned audio first.');
       const video=this.getVideo();video?.pause();
       const time=Math.max(0,Math.min(sound.duration-.01,this.getTime()||0));
@@ -235,6 +239,7 @@ export class AudioPanel{
     description.textContent=modelLabel+(check.error?'Music check unavailable: '+check.error:
       check.verified?'No music/instrument intervals flagged at the current conservative thresholds. NOT a guarantee.':
       `${check.remainingRisk||0} red + ${check.remainingCaution||0} amber interval(s). Amber = possible instruments beneath speech; review manually or choose No audio.`);
+    $('audio-mute-risk').disabled=!(check.blocks||[]).some(b=>b.state==='risk'||b.state==='caution');
     for(const item of check.blocks||[]){const segment=document.createElement('button');segment.type='button';
       segment.className='music-check-segment '+item.state;segment.style.flex=String(Math.max(.2,item.end-item.start));
       segment.title=`${item.start.toFixed(1)}–${item.end.toFixed(1)}s · Original music ${(100*item.before).toFixed(0)}% · Remaining ${(100*item.after).toFixed(0)}% · Instrument ${(100*(item.instrument||0)).toFixed(0)}%`;
@@ -242,8 +247,49 @@ export class AudioPanel{
       strip.append(segment);
     }
   }
-  exportOptions(){
-    if(this.mode==='clean'&&!this.cleaned)throw new Error('Cleaned audio is not ready. Process it first, or choose No audio.');
-    return {audioMode:this.mode,cleanedAudio:this.cleaned,musicCheck:this.musicCheck};
+  updateMuteUI(){
+    $('audio-manual-mutes').textContent=this.mutedIntervals.length?
+      `Muted sections: ${this.mutedIntervals.map(x=>x.start.toFixed(1)+'–'+x.end.toFixed(1)+'s').join(', ')}`:
+      'No muted sections selected.';
   }
+  addMuteRange(){
+    const start=Number($('audio-mute-start').value),end=Number($('audio-mute-end').value);
+    if(!Number.isFinite(start)||!Number.isFinite(end)||start<0||end<=start){this.toast('Choose a valid start and end time for your mute.');return;}
+    this.mutedIntervals.push({start,end});this.mutedIntervals.sort((a,b)=>a.start-b.start);
+    this.updateMuteUI();this.onChange();this.toast(`Audio will be muted from ${start.toFixed(1)}–${end.toFixed(1)} seconds.`);
+  }
+  muteAllRisks(){
+    if(!this.musicCheck?.blocks?.length){this.toast('Process audio and run Music check first.');return;}
+    const marked=this.musicCheck.blocks.filter(b=>b.state==='risk'||b.state==='caution').map(b=>({start:b.start,end:b.end}));
+    if(!marked.length){this.toast('No amber/red music-check sections to mute.');return;}
+    this.mutedIntervals.push(...marked);this.mutedIntervals.sort((a,b)=>a.start-b.start);
+    this.updateMuteUI();this.onChange();this.toast(`Muted ${marked.length} flagged music section(s) in the export.`);
+  }
+  applyMutes(raw){
+    if(!raw||!this.mutedIntervals.length)return raw;
+    const result=new AudioBuffer({sampleRate:raw.sampleRate,length:raw.length,numberOfChannels:raw.numberOfChannels});
+    const fade=Math.max(1,Math.round(raw.sampleRate*.025));
+    for(let c=0;c<raw.numberOfChannels;c++){
+      const data=new Float32Array(raw.getChannelData(c));
+      for(const {start,end} of this.mutedIntervals){
+        const lo=Math.max(0,Math.min(data.length,Math.floor(start*raw.sampleRate)));
+        const hi=Math.max(lo,Math.min(data.length,Math.ceil(end*raw.sampleRate)));
+        for(let i=Math.max(0,lo-fade);i<lo;i++)data[i]*=(lo-i)/fade;
+        data.fill(0,lo,hi);
+        for(let i=hi;i<Math.min(data.length,hi+fade);i++)data[i]*=(i-hi)/fade;
+      }
+      result.copyToChannel(data,c);
+    }
+    return result;
+  }
+  async exportOptions(){
+    if(this.mode==='clean'&&!this.cleaned)throw new Error('Cleaned audio is not ready. Process it first, or choose No audio.');
+    if(this.mode==='none')return {audioMode:'none',cleanedAudio:null,musicCheck:this.musicCheck};
+    if(!this.mutedIntervals.length)return {audioMode:this.mode,cleanedAudio:this.cleaned,musicCheck:this.musicCheck};
+    const original=this.mode==='clean'?this.cleaned:await this.decode();
+    // An edited original soundtrack is sent through the local PCM/AAC path;
+    // it is never copied from the unedited file by FFmpeg on export.
+    return {audioMode:'clean',cleanedAudio:this.applyMutes(original),musicCheck:this.musicCheck};
+  }
+
 }
