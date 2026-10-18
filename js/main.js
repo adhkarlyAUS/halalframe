@@ -497,35 +497,53 @@ async function warmAI(){
   channel.port1.onmessage=e=>{if(e.data?.done){if(!e.data.ready)swWarmStarted=false;checkAIReady();channel.port1.close();}};
   navigator.serviceWorker.controller.postMessage({type:'WARM_AI'},[channel.port2]);
 }
-function showUpdate(){
-  const banner=$('update-banner');banner.classList.remove('hidden');
-  if(!project&&!busyController&&!trackingActive&&!location.search.includes('shared=')&&!document.body.classList.contains('hf-locked')){
-    const key='halalframe-auto-reloaded-'+APP_VERSION;
-    if(!sessionStorage.getItem(key)){sessionStorage.setItem(key,'1');location.reload();}
+// Only show "Update ready" for a GENUINELY waiting, newer service worker.
+// The old controllerchange/SW_ACTIVATED handler showed a permanent false toast
+// because skipWaiting activates the worker immediately on every deployment.
+const updateBanner=$('update-banner');
+const swVersion=worker=>{try{return new URL(worker?.scriptURL||'').searchParams.get('v');}catch{return null;}};
+const isNewer=(remote,local=APP_VERSION)=>{
+  if(!remote)return false;
+  const a=remote.split('.').map(Number),b=local.split('.').map(Number);
+  for(let i=0;i<Math.max(a.length,b.length);i++){
+    if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);
   }
+  return false;
+};
+function hideUpdate(){updateBanner.classList.add('hidden');}
+function showUpdateIfWaiting(){
+  const waiting=swRegistration?.waiting;
+  const nextVersion=swVersion(waiting);
+  if(!waiting||!isNewer(nextVersion)){hideUpdate();return false;}
+  updateBanner.classList.remove('hidden');
+  return true;
 }
 async function initPWA(){
+  hideUpdate();
   if(!('serviceWorker'in navigator)||location.protocol==='file:')return;
   const previous=navigator.serviceWorker.controller;
   try{
     navigator.serviceWorker.addEventListener('controllerchange',()=>{
-      if(previous&&navigator.serviceWorker.controller?.scriptURL!==previous.scriptURL)showUpdate();
-      checkAIReady();
-    });
-    navigator.serviceWorker.addEventListener('message',e=>{
-      if(e.data?.type==='SW_ACTIVATED'&&previous&&e.data.version!==new URL(previous.scriptURL).searchParams.get('v'))showUpdate();
+      hideUpdate();checkAIReady();
+      const current=swVersion(navigator.serviceWorker.controller);
+      // An empty editor can reload immediately. Never drop an open project.
+      if(previous&&isNewer(current)&&!project&&!busyController&&!trackingActive&&!document.body.classList.contains('hf-locked')){
+        const key='halalframe-auto-reloaded-'+current;
+        if(!sessionStorage.getItem(key)){sessionStorage.setItem(key,'1');location.reload();}
+      }
     });
     swRegistration=await navigator.serviceWorker.register(`./sw.js?v=${APP_VERSION}`,{scope:'./',updateViaCache:'none'});
     await navigator.serviceWorker.ready;
     if(!navigator.serviceWorker.controller)await new Promise(resolve=>{navigator.serviceWorker.addEventListener('controllerchange',resolve,{once:true});setTimeout(resolve,2500);});
-    await checkAIReady();
-    // Fresh installs may finish loading AI before this tab is SW-controlled.
-    // Warm pinned wasm/model assets once control is established, for offline AI.
-    void warmAI();
-    swRegistration.update().catch(()=>{});
-  }catch(e){$('offline-status').textContent='Offline install unavailable';}
+    swRegistration.addEventListener('updatefound',()=>{
+      const installing=swRegistration.installing;
+      installing?.addEventListener('statechange',()=>{if(installing.state==='installed')showUpdateIfWaiting();});
+    });
+    showUpdateIfWaiting();await checkAIReady();void warmAI();
+    swRegistration.update().then(showUpdateIfWaiting).catch(()=>{});
+  }catch(e){hideUpdate();$('offline-status').textContent='Offline install unavailable';}
 }
-$('update-reload').onclick=()=>location.reload();
+$('update-reload').onclick=()=>{hideUpdate();location.reload();};
 // A tab left open for days should discover an update even if the browser does
 // not immediately check for a new SW. Only the tiny HTML file is fetched.
 async function checkForNewRelease(){
@@ -534,7 +552,7 @@ async function checkForNewRelease(){
     const response=await fetch(`./index.html?version-check=${Date.now()}`,{cache:'no-store'});
     if(!response.ok)return;
     const found=(await response.text()).match(/const APP_VERSION=['"]([^'"]+)['"]/);
-    if(found&&found[1]!==APP_VERSION)showUpdate();
+    if(found&&isNewer(found[1])){await swRegistration?.update();showUpdateIfWaiting();}else hideUpdate();
   }catch{} // Do not show a false update when offline.
 }
 window.addEventListener('visibilitychange',()=>{if(!document.hidden)checkForNewRelease();});
