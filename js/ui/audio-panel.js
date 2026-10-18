@@ -1,5 +1,5 @@
 // HalalFrame's on-device audio tab. No media is sent to any service.
-import {MODELS,VAD_URL,displayMB} from '../audio/models.js';
+import {MODELS,VAD_URL,DEMUCS,displayMB} from '../audio/models.js';
 const $=id=>document.getElementById(id);
 const AUDIO_CACHE='halalframe-audio-models-v1.5';
 const MEDIA_LIMIT_SECONDS=120;
@@ -7,16 +7,16 @@ export class AudioPanel{
   constructor({getFile,getTime,getVideo,onChange=()=>{},toast=()=>{}}){
     Object.assign(this,{getFile,getTime,getVideo,onChange,toast});
     this.mode='original';this.quality='quick';this.cleaned=null;this.original=null;this._rejectJob=null;
-    this.worker=null;this.context=null;this.source=null;this.busy=false;this.cancelling=false;this.maxProgress=0;
+    this.worker=null;this.context=null;this.source=null;this.musicCheck=null;this.busy=false;this.cancelling=false;this.maxProgress=0;
     this.bind();this.updateUI();
   }
   bind(){
     $('tab-visual').addEventListener('click',()=>this.tab('visual'));
     $('tab-audio').addEventListener('click',()=>this.tab('audio'));
     $('audio-mode').addEventListener('change',e=>{this.setMode(e.target.value);});
-    $('audio-quality').addEventListener('change',e=>{this.quality=e.target.value;this.cleaned=null;this.stopPreview();this.updateUI();this.checkCache();});
-    $('audio-strength').addEventListener('input',e=>{$('audio-strength-label').textContent=['Gentle','Strong','Maximum'][Number(e.target.value)]||'Strong';this.cleaned=null;this.updateUI();});
-    $('audio-strict').addEventListener('change',()=>{this.cleaned=null;this.updateUI();});
+    $('audio-quality').addEventListener('change',e=>{this.quality=e.target.value;this.cleaned=null;this.musicCheck=null;this.stopPreview();this.updateUI();this.checkCache();});
+    $('audio-strength').addEventListener('input',e=>{$('audio-strength-label').textContent=['Gentle','Strong','Maximum'][Number(e.target.value)]||'Strong';this.cleaned=null;this.musicCheck=null;this.updateUI();});
+    $('audio-strict').addEventListener('change',()=>{this.cleaned=null;this.musicCheck=null;this.updateUI();});
     $('audio-process').addEventListener('click',()=>this.process());
     $('audio-cancel').addEventListener('click',()=>this.cancel());
     $('audio-preview-original').addEventListener('click',()=>this.preview('original'));
@@ -31,7 +31,7 @@ export class AudioPanel{
     if(!audio)this.stopPreview();
   }
   reset(enabled){
-    this.cancel();this.stopPreview();this.cleaned=null;this.original=null;this.mode='original';this.quality='quick';
+    this.cancel();this.stopPreview();this.cleaned=null;this.original=null;this.musicCheck=null;this.mode='original';this.quality='quick';
     $('audio-mode').value='original';$('audio-quality').value='quick';$('audio-strength').value='1';$('audio-strict').checked=false;
     $('tab-audio').disabled=!enabled;
     if(!enabled)this.tab('visual');
@@ -53,16 +53,17 @@ export class AudioPanel{
     $('audio-preview-original').disabled=!this.getFile();
     $('audio-preview-clean').disabled=!this.cleaned;
     $('audio-preview-stop').disabled=!this.source;
-    const desc=this.mode==='original'?'Original sound is kept.':this.mode==='none'?'Completely silent MP4; no audio track is added.':this.cleaned?'Cleaned-audio preview ready. Listen carefully before export.':'Clean audio first. Export will be blocked until processing succeeds.';
+    const report=$('music-report');if(report)report.classList.toggle('hidden',!this.musicCheck||!active);
+    const desc=this.mode==='original'?'Original sound is kept.':this.mode==='none'?'Completely silent MP4; no audio track is added.':this.cleaned?(this.musicCheck?.verified?'Voice processed · no high-confidence music found by classifier. Listen carefully.':'Voice processed · music check unverified or possible music remains. Review before export.'):'Process and verify voice first. No audio is always the safest option.';
     $('audio-summary').textContent=desc;
-    $('export-audio-summary').textContent=this.mode==='original'?'Audio: Original':this.mode==='none'?'Audio: None (silent)':'Audio: Cleaned voice'+(this.cleaned?' · ready':' · process first');
-    if(this.mode==='clean')$('audio-model-size').textContent=this.quality==='quick'?'First download: Silero 2.3 MB + Quick model 29.7 MB.':'First download: Silero 2.3 MB + Best model 66.8 MB. Higher memory use; slower on phones.';
+    $('export-audio-summary').textContent=this.mode==='original'?'Audio: Original':this.mode==='none'?'Audio: None (silent)':'Audio: Voice processed'+(this.cleaned?(this.musicCheck?.verified?' · classifier check passed':' · music check incomplete'):' · process first');
+    if(this.mode==='clean')$('audio-model-size').textContent=this.quality==='quick'?'First download: Silero 2.3 MB + Quick model 29.7 MB.':this.quality==='studio'?'Studio experimental: 181 MB HTDemucs; high memory, may be unsupported on GitHub Pages.':'First download: Silero 2.3 MB + Best model 66.8 MB. Higher memory use; slower on phones.';
     this.onChange();
   }
   async checkCache(){
     try{
       const c=await caches.open(AUDIO_CACHE);
-      const vad=!!await c.match(VAD_URL),model=!!await c.match(MODELS[this.quality].url);
+      const vad=!!await c.match(VAD_URL),model=!!await c.match(this.quality==='studio'?DEMUCS.url:MODELS[this.quality].url);
       $('audio-cache').textContent=vad&&model?'Models downloaded for offline use ✓':vad?'Voice detector cached · separator needs first download':'Models download once after you tap Process';
     }catch{$('audio-cache').textContent='Browser storage unavailable — internet may be required';}
   }
@@ -77,7 +78,7 @@ export class AudioPanel{
   }
   async process(){
     if(this.busy)return;
-    this.mode='clean';$('audio-mode').value='clean';this.busy=true;this.cleaned=null;this.maxProgress=0;this.stopPreview();this.updateUI();
+    this.mode='clean';$('audio-mode').value='clean';this.busy=true;this.cleaned=null;this.musicCheck=null;this.maxProgress=0;this.stopPreview();this.updateUI();
     const since=performance.now();
     try{
       const original=await this.decode();
@@ -123,7 +124,7 @@ export class AudioPanel{
             const part=Math.max(0,Math.min(1,d.ratio||0));
             // Stage ratios restart on each model. Show ONE monotonic job total.
             const vadModel=d.stage==='models'&&/Silero|voice detector/i.test(d.detail||'');
-            const stageFraction=d.stage==='models'?(vadModel?.02+.13*part:.27+.15*part):
+            const stageFraction=d.stage==='music-check'?.96+.035*part:d.stage==='models'?(vadModel?.02+.13*part:.27+.15*part):
               d.stage==='vad'?.15+.12*part:d.stage==='separate'?.42+.54*part:
               d.stage==='refine'?.96+.039*part:0;
             this.maxProgress=Math.max(this.maxProgress,stageFraction);
@@ -145,11 +146,13 @@ export class AudioPanel{
       const result=new AudioBuffer({numberOfChannels:decoded.length,length:decoded[0].length,sampleRate:output.sampleRate});
       decoded.forEach((ch,index)=>result.copyToChannel(ch,index));
       this.cleaned=result;
-      $('audio-progress-text').textContent=`Cleaned ${(result.duration).toFixed(1)}s · speech detected ${output.speechPercent}% · listen before sharing`;
+      this.musicCheck=output.musicCheck||{verified:false,blocks:[],error:'No independent music verification'};
+      this.showMusicReport();
+      $('audio-progress-text').textContent=`Voice processed ${result.duration.toFixed(1)}s · speech ${output.speechPercent}% · Music check ${this.musicCheck.verified?'passed':'needs your review'}`;
       $('audio-progress').style.width='100%';this.toast('Cleaned audio ready. Compare Original and Cleaned before exporting.');
       this.checkCache();
     }catch(e){
-      this.cleaned=null;
+      this.cleaned=null;this.musicCheck=null;
       if(!this.cancelling){this.toast('Audio cleaning could not finish: '+e.message);$('audio-progress-text').textContent=e.message;}
     }finally{
       this.worker?.terminate();this.worker=null;this._rejectJob=null;this.busy=false;this.cancelling=false;this.updateUI();
@@ -181,8 +184,23 @@ export class AudioPanel{
     if($('audio-preview-status'))$('audio-preview-status').textContent='Tap Original or Cleaned to hear five seconds from your playhead.';
     if($('audio-preview-stop'))$('audio-preview-stop').disabled=true;
   }
+  showMusicReport(){
+    const report=$('music-report'),strip=$('music-report-strip'),description=$('music-report-description');
+    if(!report||!strip||!description||typeof strip.replaceChildren!=='function')return;
+    report.classList.toggle('hidden',!this.musicCheck);strip.replaceChildren();
+    const check=this.musicCheck;if(!check)return;
+    description.textContent=check.error?'Music check unavailable: '+check.error:
+      check.verified?'No high-confidence music/instrument segments detected after processing. This is NOT a guarantee.':
+      `${check.remainingRisk} interval(s) remain suspicious. Red = possible music under speech. Listen before exporting or choose No audio.`;
+    for(const item of check.blocks||[]){const segment=document.createElement('button');segment.type='button';
+      segment.className='music-check-segment '+item.state;segment.style.flex=String(Math.max(.2,item.end-item.start));
+      segment.title=`${item.start.toFixed(1)}–${item.end.toFixed(1)}s · Original music ${(100*item.before).toFixed(0)}% · Remaining ${(100*item.after).toFixed(0)}%`;
+      segment.onclick=()=>{const video=this.getVideo();if(video){video.currentTime=item.start;video.pause();}this.preview('clean');};
+      strip.append(segment);
+    }
+  }
   exportOptions(){
     if(this.mode==='clean'&&!this.cleaned)throw new Error('Cleaned audio is not ready. Process it first, or choose No audio.');
-    return {audioMode:this.mode,cleanedAudio:this.cleaned};
+    return {audioMode:this.mode,cleanedAudio:this.cleaned,musicCheck:this.musicCheck};
   }
 }

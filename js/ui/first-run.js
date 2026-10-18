@@ -4,9 +4,9 @@ const AGREEMENT_KEY='halalframe-disclaimer-accepted-v1';
 const $=id=>document.getElementById(id);
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const SLIDES=[
-  {label:'WELCOME',symbol:'◇',title:'Welcome to HalalFrame',description:'A simple, private way to conceal people and regions in photos and videos.'},
-  {label:'HOW IT WORKS',symbol:'◎ → ↗ → ↓',title:'Tap a person. Track. Export.',description:'Pause and tap a person, track their movement, inspect the timeline, then export your concealed media.'},
-  {label:'YOUR PRIVACY',symbol:'▣',title:'Everything stays on your phone',description:'No sign-in, no server and no uploaded media. Your videos and photos are processed in your browser. AI model files download on the first run.'},
+  {label:'WELCOME',symbol:'',title:'Welcome to HalalFrame',description:'A simple, private way to conceal people and regions in photos and videos.'},
+  {label:'HOW IT WORKS',symbol:'steps',title:'Tap a person. Track. Export.',description:'Pause and tap a person, track their movement, inspect the timeline, then export your concealed media.'},
+  {label:'YOUR PRIVACY',symbol:'privacy',title:'Everything stays on your phone',description:'No sign-in, no server and no uploaded media. Your videos and photos are processed in your browser. AI model files download on the first run.'},
   {label:'IMPORTANT DISCLAIMER',symbol:'!',title:'Before you begin',description:'Please understand the limitations of automatic concealment.'}
 ];
 export function initFirstRun({initAI=async()=>{},onAIReady=()=>{},onReady=()=>{}}={}){
@@ -24,9 +24,15 @@ export function initFirstRun({initAI=async()=>{},onAIReady=()=>{},onReady=()=>{}
     const data=SLIDES[step];
     $('onboard-step-label').textContent=`${data.label} · ${step+1} OF 4`;
     $('onboard-title').textContent=data.title;
-    $('onboard-visual').textContent=data.symbol;
+    const visual=$('onboard-visual');visual.replaceChildren();visual.classList.toggle('is-steps',step===1);visual.classList.toggle('hidden',step===0||step===3);
+    if(step===1){
+      for(const [file,alt] of [['tap-person.svg','Tap a person'],['track-person.svg','Follow their motion'],['export-video.svg','Save and share']]){
+        const img=document.createElement('img');img.src='assets/onboarding/'+file;img.alt=alt;img.className='onboard-illustration';visual.append(img);
+      }
+    }else if(step===2){const lock=document.createElement('span');lock.className='onboard-privacy-symbol';lock.textContent='⌁';lock.setAttribute('aria-label','Private processing');visual.append(lock);}
+    
     $('onboard-description').textContent=data.description;
-    $('onboard-disclaimer').classList.toggle('hidden',step!==3);
+    $('onboard-disclaimer').classList.toggle('hidden',step!==3);$('onboard-description').classList.toggle('onboard-centered',step===2);
     $('onboard-dots').replaceChildren();
     for(let i=0;i<SLIDES.length;i++){
       const dot=document.createElement('span');dot.className='onboard-dot'+(i===step?' active':'');dot.setAttribute('aria-label',`Step ${i+1}${i===step?', current':''}`);
@@ -59,20 +65,20 @@ export function initFirstRun({initAI=async()=>{},onAIReady=()=>{},onReady=()=>{}
     setGate(true);
     const splash=$('splash-screen'),status=$('splash-status');
     const begin=performance.now();
-    status.textContent='Loading on-device AI…';
+    status.textContent='App · loading editor…';$('splash-progress').style.width='18%';
     // AI loading starts for real here; the splash has an indeterminate bar and
     // does not pretend that its animation measures downloaded bytes.
-    const bootstrap=Promise.resolve().then(initAI).then(()=>{
-      onAIReady();$('splash-progress').classList.add('complete');
+    const bootstrap=Promise.resolve().then(()=>{status.textContent='AI models · preparing on-device detection…';$('splash-progress').style.width='56%';return initAI();}).then(()=>{
+      onAIReady();$('splash-progress').style.width='100%';$('splash-progress').classList.add('complete');
       return 'ready';
     },err=>{
       console.warn('AI initialization unavailable; manual editing still works:',err);
-      return 'failed';
+      status.textContent='AI requires internet on first use. Manual editor is ready.';return 'failed';
     });
     const outcome=await Promise.race([bootstrap,delay(6500).then(()=>'loading')]);
     if(outcome==='failed')status.textContent='AI unavailable. Manual tools are ready.';
     if(outcome==='loading')status.textContent='AI continues loading in the background…';
-    if(outcome==='ready')status.textContent='Your private editor is ready';
+    if(outcome==='ready')status.textContent='Ready · private editing on your device';
     await delay(Math.max(0,650-(performance.now()-begin)));
     splash.classList.add('leaving');await delay(240);splash.classList.add('hidden');
     if(accepted())finish();else openOnboarding({at:0});
