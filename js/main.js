@@ -13,11 +13,13 @@ import {activeAt} from './state.js';
 import {initFirstRun,initExportReview} from './ui/first-run.js';
 import {takeSharedFile} from './ui/share-target.js';
 import {AudioPanel} from './ui/audio-panel.js';
+import {isPersonSelection,needsFullTracking,finalizeFullTrack,applyCompleteScanTrack} from './engine/auto-coverage.js';
 const $=id=>document.getElementById(id);
 let project=null,media=null,kind='video',sourceURL=null,selectedId=null,tool='select',draft=null;
 let busyController=null,reviewResolve=null,fixResolve=null,aiBoxes=[],trackingActive=false,scanResults=[];
 let lastFrameRendered=-1,toastTimer=null,saveTimer=null,frameCounter=0,fpsWindowStart=performance.now(),measuredFPS=0;
-let exportResult=null,sourceFile=null,videoProbe=null,pendingConversion=null,lastDiagnostic=null;const requestExportReview=initExportReview();const maskCache=new MaskCache();const maskTasks=new Set();
+let exportResult=null,sourceFile=null,videoProbe=null,pendingConversion=null,lastDiagnostic=null;
+const recentExports=[];const RECENT_LIMIT=4;let autoDownloadAttempts=0;const requestExportReview=initExportReview();const maskCache=new MaskCache();const maskTasks=new Set();
 let temporaryReveal=false;let seekPending=null,seekRunning=false;let frameTimes=[],lastMeasuredMediaTime=null;const FPS_VALUES=[24,25,30,50,60];
 let hiddenVideo=$('source-video'),canvas=$('preview'),ctx=canvas.getContext('2d',{alpha:false});
 const history=new History();
@@ -62,6 +64,15 @@ function refresh({renderOnly=false}={}){
   for(const id of ['delete-mask','track-forward','track-backward','whole-video'])$(id).disabled=!has || (id.startsWith('track')&&kind==='photo');
   $('undo').disabled=!history.canUndo;$('redo').disabled=!history.canRedo;
   if(c){
+    const trackingLabel=$('tracking-status');
+    trackingLabel.classList.toggle('hidden',!isPersonSelection(c)||kind!=='video');
+    if(isPersonSelection(c)&&kind==='video'){
+      const done=!needsFullTracking(c,project.video.duration);
+      trackingLabel.classList.toggle('complete',done);
+      trackingLabel.textContent=c.userEnded?'Manual end point selected — review this time range.':
+        done?`✓ AI followed this person across the full ${seconds(project.video.duration)} clip.`:
+        '⚠ Following is unfinished. Export will ask you to complete tracking before saving.';
+    }
     $('mask-enabled').checked=c.enabled!==false;
     $('mask-label').value=c.label;$('effect').value=c.effect;$('shape').value=c.shape;
     $('strength').value=c.strength;$('padding').value=Math.round(c.padding*100);$('padding-label').textContent=Math.round(c.padding*100)+'%';
@@ -107,7 +118,7 @@ function updateDirect(fn,{save=false,refreshUI=true}={}){if(!project)return;fn()
 function selectMask(id){selectedId=id;refresh();}
 function setTool(mode){tool=mode;input.setMode(mode==='key'?'draw':mode==='draw'?'draw':'select');
   ['select','draw','key','exclude'].forEach(n=>$(`mode-${n}`).classList.toggle('selected',n===mode));
-  $('mode-help').textContent={select:'Tap a person on the paused video. The local AI will suggest a body box.',draw:'Drag directly on the paused video to create a new time-limited region. Drawing does not move the playhead.',key:'Select a region, scrub to a new time, then draw its updated location. The region moves smoothly between keyframes.',exclude:'Tap someone you do NOT want concealed. The app will track their position and exclude them from unrelated masks.'}[mode];
+  $('mode-help').textContent={select:'Tap a person once — AI automatically tracks them to the start AND end of the video.',draw:'Drag directly on the paused video to create a new time-limited region. Drawing does not move the playhead.',key:'Select a region, scrub to a new time, then draw its updated location. The region moves smoothly between keyframes.',exclude:'Tap someone you do NOT want concealed. The app will track their position and exclude them from unrelated masks.'}[mode];
   hiddenVideo.pause();
 }
 function showCodecWarning(file,probe=null,error=null){
@@ -250,29 +261,107 @@ async function excludeTappedPerson(x,y){
   }catch(error){if(error.name!=='AbortError')toast('Could not exclude person: '+error.message);}
   finally{endBusy();setTool('select');}
 }
+// Persistent modal decision: no silent toast for an operation that cannot continue.
+function requestDecision(modalId,{detail,buttons}){
+  const modal=$(modalId);
+  if(detail){const p=modal.querySelector('[id$="-detail"]');if(p)p.textContent=detail;}
+  modal.classList.remove('hidden');
+  return new Promise(resolve=>{
+    let done=false;const cleanup=()=>{modal.classList.add('hidden');for(const [id,handler] of handlers)$(id).removeEventListener('click',handler);};
+    const handlers=Object.entries(buttons).map(([id,value])=>[id,()=>{if(done)return;done=true;cleanup();resolve(value);}]);
+    for(const [id,handler] of handlers)$(id).addEventListener('click',handler);
+    $(handlers[0][0]).focus();
+  });
+}
+// Full-video tracking is the default for a person. Drawing a manual region
+// deliberately retains its time range and keyframes.
+async function autoTrackPerson(c,{fromExport=false}={}){
+  if(kind!=='video'||!project||busyController||!isPersonSelection(c))return false;
+  const originalPlayhead=currentTime(),origin=c.originalTapTime??c.track.find(p=>p.source==='manual'||p.source==='ai')?.t??0;
+  const duration=project.video.duration;
+  const controller=beginBusy('Following this person…','Tracking from the selected frame to both ends of the video. Cancel to stop.');
+  trackingActive=true;hiddenVideo.pause();c.trackingStatus='running';
+  c.startTime=0;c.endTime=duration;
+  const fweight=Math.max(0,duration-origin)/Math.max(duration,.01);
+  let userEnded=false,retryAfterCleanup=false;
+  const review=async info=>{
+    // Walking outside the camera's view is expected; maintain a conservative
+    // predicted region and keep searching for re-entry without repeated taps.
+    if(info.reason?.includes('Subject lost'))return {action:'continue'};
+    const decision=await askTracking(info);
+    if(decision.action==='end'){c.userEnded=true;userEnded=true;}
+    return decision;
+  };
+  try{
+    await ai.init();
+    if(origin<duration-.005){
+      await trackDirection({video:hiddenVideo,file:sourceFile,project,concealment:c,ai,direction:1,
+        checkEvery:Number($('check-interval').value),accuracy:$('tracking-accuracy').value,signal:controller.signal,
+        onProgress:(f,t)=>progress(fweight*f,`Following this person… ${Math.round(fweight*f*100)}% · ${seconds(t)} · Cancel to stop`),
+        onFrame:(t,boxes)=>{aiBoxes=boxes;render();},onReview:review});
+    }
+    if(!controller.signal.aborted&&origin>.005){
+      await trackDirection({video:hiddenVideo,file:sourceFile,project,concealment:c,ai,direction:-1,
+        checkEvery:Number($('check-interval').value),accuracy:$('tracking-accuracy').value,signal:controller.signal,
+        onProgress:(f,t)=>progress(fweight+(1-fweight)*f,`Following this person… ${Math.round((fweight+(1-fweight)*f)*100)}% · ${seconds(t)}`),
+        onFrame:(t,boxes)=>{aiBoxes=boxes;render();},onReview:review});
+    }
+    if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
+    if(!userEnded){finalizeFullTrack(c,duration);progress(1,'Person followed from start to end. Review the result.');}
+    else c.trackingStatus='complete';
+    snapshot();
+    toast(`${c.label}: followed through ${seconds(duration)}. Review before sharing.`);
+    return true;
+  }catch(error){
+    c.trackingStatus='incomplete';snapshot();
+    if(error.name!=='AbortError')console.error('Full-video tracking failed',error);
+    if(!fromExport){
+      const action=await requestDecision('coverage-block-modal',{
+        detail:`${c.label} could not be followed through the complete video (${error.message}). The export will not silently stop masking early. Retry tracking or return to the editor.`,
+        buttons:{'coverage-finish':'retry','coverage-back':'back'}
+      });
+      if(action==='retry')retryAfterCleanup=true;
+    }
+  }finally{
+    trackingActive=false;endBusy();hiddenVideo.pause();
+    // Playback position is not part of the mask. Return to the user's frame.
+    if(!fromExport&&kind==='video'&&Math.abs(originalPlayhead-currentTime())>.03)void seekTo(originalPlayhead);
+    refresh();
+  }
+  if(retryAfterCleanup)return autoTrackPerson(c,{fromExport});
+  return false;
+}
 async function onTap(x,y){
   if(fixResolve){const b={x:clamp(x-.09,0,.99),y:clamp(y-.14,0,.99),w:.18,h:.28};onDraw(b);return;}
   if(tool==='key'){toast('Draw a rectangle for the new keyframe.');return;}
   if(tool==='draw'){toast('Drag to draw a rectangle, not just tap.');return;}
   if(!project||busyController){toast('Finish the current operation first.');return;}
   if(tool==='exclude'){await excludeTappedPerson(x,y);return;}
-  hiddenVideo.pause();
+  hiddenVideo.pause();let created=null;
   try{
     const controller=beginBusy('Detecting people','The model runs locally after downloading.');
-    aiBoxes=await ai.detect(media,currentTime(),project.video.fps);
+    const time=currentTime();
+    aiBoxes=await ai.detect(media,time,project.video.fps);
     if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
     render();
     const b=nearestPerson(aiBoxes,x,y);
     if(!b){toast('No person found at this frame. Use Draw new box.');return;}
-    const c=newConcealment(project,b,currentTime(),{label:`Person ${project.concealments.filter(c=>c.label.startsWith('Person')).length+1}`,source:'ai'});
+    const c=newConcealment(project,b,time,{label:`Person ${project.concealments.filter(c=>c.label.startsWith('Person')).length+1}`,source:'ai'});
     c.track[0].confidence=b.confidence;c.identitySignature=appearanceSignature(media,b);c.precisionCritical=true;c.thumbnail=personThumbnail(media,b);
-    project.concealments.push(c);selectedId=c.id;snapshot();toast(`${c.label} selected. Press Track → to follow them.`);
+    if(kind==='video'){
+      c.originalTapTime=time;c.trackingStatus='pending';c.userEnded=false;
+      // Full-length timeline coverage is visible immediately; masks still
+      // require successful tracking before export is allowed.
+      c.startTime=0;c.endTime=project.video.duration;
+    }
+    project.concealments.push(c);selectedId=c.id;created=c;snapshot();
   }catch(e){if(e.name==='AbortError')toast('AI selection cancelled.');else{console.error(e);toast('AI unavailable: '+e.message+'. Manual drawing still works.');}}
   finally{endBusy();}
+  if(created&&kind==='video')await autoTrackPerson(created);
 }
 const input=new CanvasInput(canvas,{onDraw,onTap,onDraft:b=>{draft=b;render();}});
 const timeline=new Timeline({slider:$('scrubber'),lanes:$('timeline-lanes'),onSeek:seekTo,onSelect:selectMask,
-  onRange:(id,edge,t)=>{const c=project.concealments.find(x=>x.id===id);if(!c)return;if(edge==='start')c.startTime=clamp(t,0,c.endTime);else c.endTime=clamp(t,c.startTime,project.video.duration);refresh({renderOnly:true});},
+  onRange:(id,edge,t)=>{const c=project.concealments.find(x=>x.id===id);if(!c)return;if(edge==='start'){c.startTime=clamp(t,0,c.endTime);c.userStart=true;}else{c.endTime=clamp(t,c.startTime,project.video.duration);c.userEnded=true;}refresh({renderOnly:true});},
   onCommit:()=>snapshot(),onMenu:(id,rect)=>{selectMask(id);const menu=$('mask-menu');menu.style.left=`${Math.min(window.innerWidth-170,rect.left)}px`;menu.style.top=`${Math.min(window.innerHeight-100,rect.bottom+4)}px`;menu.classList.remove('hidden');}
 });
 async function seekTo(time){
@@ -314,7 +403,9 @@ async function runTracking(direction){
     await ai.init();
     await trackDirection({video:hiddenVideo,file:sourceFile,project,concealment:c,ai,direction,checkEvery:Number($('check-interval').value),accuracy:$('tracking-accuracy').value,signal:controller.signal,
       onProgress:(p,t)=>progress(p,`${Math.round(p*100)}% · ${seconds(t)} · ${c.track.length} positions`),
-      onFrame:(t,boxes)=>{aiBoxes=boxes;render();},onReview:askTracking});
+      onFrame:(t,boxes)=>{aiBoxes=boxes;render();},onReview:async info=>{const decision=await askTracking(info);if(decision.action==='end')c.userEnded=true;return decision;}});
+    if(!c.userEnded&&c.startTime<=.04&&c.endTime>=project.video.duration-.04)finalizeFullTrack(c,project.video.duration);
+    else c.trackingStatus='incomplete';
     toast(`Tracking completed: ${c.track.length} saved positions. Review before sharing.`);
   }catch(e){if(e.name==='AbortError')toast('Tracking cancelled; existing positions kept.');else{console.error(e);toast('Tracking stopped: '+e.message);}}
   finally{trackingActive=false;endBusy();snapshot();refresh();}
@@ -341,7 +432,7 @@ function showScan(){const list=$('scan-list');list.replaceChildren();$('scan-all
   for(const tr of scanResults){const row=document.createElement('div');row.className='scan-person';
     const thumb=document.createElement('img');thumb.className='thumb';thumb.alt=tr.label+' at initial detection';thumb.src=tr.thumbnail;
     const info=document.createElement('div');const name=document.createElement('strong');name.textContent=tr.label;
-    const sub=document.createElement('span');sub.className='dim';sub.textContent=`${seconds(tr.startTime)}–${seconds(tr.endTime)} · ${tr.track.length} positions`;info.append(name,sub);
+    const sub=document.createElement('span');sub.className='dim';sub.textContent=`Full-video cover on selection · ${tr.track.length} tracked positions`;info.append(name,sub);
     const group=document.createElement('div');group.className='choice-group';
     for(const [value,caption] of [['cover','Cover'],['exclude','Don’t cover'],['skip','Skip']]){
       const label=document.createElement('label'),input=document.createElement('input');input.type='radio';input.name='choice-'+tr.id;input.value=value;input.checked=value==='cover';label.append(input,document.createTextNode(caption));group.append(label);
@@ -353,7 +444,9 @@ function showScan(){const list=$('scan-list');list.replaceChildren();$('scan-all
 function applyScan(tracks,excluded=[]){
   if(!project)return;
   for(const tr of tracks){const c=newConcealment(project,tr.track[0],tr.startTime,{label:`Person ${project.concealments.filter(c=>c.label.startsWith('Person')).length+1}`,source:'ai'});
-    c.track=clone(tr.track);c.startTime=tr.startTime;c.endTime=tr.endTime;c.precisionCritical=true;c.identitySignature=tr.identitySignature||null;
+    c.track=clone(tr.track);c.precisionCritical=true;c.identitySignature=tr.identitySignature||null;
+    if(kind==='video')applyCompleteScanTrack(c,tr,project.video.duration);
+    else{c.startTime=0;c.endTime=0;c.trackingStatus='complete';}
     project.concealments.push(c);selectedId=c.id;
   }
   project.exclusions??=[];
@@ -364,7 +457,7 @@ function editSelection(field,value){const c=selected();if(!c)return;
   if(field==='effect'&&!['pixelate','blur'].includes(value))value='pixelate';
   if(field==='startTime')value=clamp(Number(value),0,c.endTime);
   if(field==='endTime')value=clamp(Number(value),c.startTime,project.video.duration);
-  c[field]=value;snapshot();}
+  c[field]=value;if(field==='endTime')c.userEnded=true;if(field==='startTime')c.userStart=true;snapshot();}
 function duplicateMask(){const c=selected();if(!c)return;const newC=clone(c);newC.id=crypto.randomUUID();newC.label=`${c.label} copy`;project.concealments.push(newC);selectedId=newC.id;snapshot();}
 function deleteMask(){const c=selected();if(!c)return;project.concealments=project.concealments.filter(x=>x.id!==c.id);selectedId=null;snapshot();void persistNow().then(ok=>{if(ok)toast('Region removed and saved.');});}
 function restore(value){if(!value)return;maskCache.clear();project=value;migrateProjectEffects(project);if(!project.concealments.some(c=>c.id===selectedId))selectedId=null;refresh();scheduleSave();}
@@ -430,7 +523,7 @@ $('include-face').onchange=e=>{if(!selected())return;selected().includeFace=e.ta
 $('preview-mask').onchange=()=>render();
 
 $('start-time').onchange=e=>editSelection('startTime',e.target.value);$('end-time').onchange=e=>editSelection('endTime',e.target.value);
-$('whole-video').onclick=()=>{const c=selected();if(!c)return;c.startTime=0;c.endTime=project.video.duration;snapshot();toast('Whole-video time range applied.');};
+$('whole-video').onclick=()=>{const c=selected();if(!c)return;c.startTime=0;c.endTime=project.video.duration;c.userEnded=false;c.userStart=false;snapshot();toast('Whole-video time range applied.');};
 $('whole-frame').onchange=e=>{const c=selected();if(!c)return;c.wholeFrame=e.target.checked;snapshot();toast(c.wholeFrame?'Entire frame selected intentionally.':'Region-only masking restored.');};
 $('undo').onclick=()=>restore(history.undo());$('redo').onclick=()=>restore(history.redo());
 $('debug').onchange=()=>{$('self-check-tools').classList.toggle('hidden',!$('debug').checked);render();};
@@ -467,7 +560,7 @@ function showInfo(type){const title={about:'About HalalFrame',ruling:'The Amanah
     about:`<h3>Developed by Adhkarly Team</h3><p>We are software developers creating practical, beneficial software to serve the Muslim Ummah, in shaa Allah. HalalFrame is built to help people conceal visual content before sharing it, with privacy, simplicity, and accessibility at its heart.</p><h3>Special thanks</h3><p>Special thanks to my friend Mustapha (Muzzy) for inspiring this idea. I ask Allah that the reward for this goes to him and to all the muwahhideen who are trying to uphold the seriousness of forbidding munkar and encouraging goodness.</p><p>All media editing takes place in the browser. No sign-in, app server or uploaded media. AI model files download from the model provider on first use.</p><h3>Discover Adhkarly</h3><p>Daily adhkar, Qur'an and Islamic learning. Our download links will be added later.</p><p><button id="info-install-link" class="text-btn">Install HalalFrame ↗</button> · <button id="info-disclaimer-link" class="text-btn">View disclaimer again ↗</button> · <button id="info-social-link" class="text-btn">Getting social media videos ↗</button></p>`,
     ruling:`<p><strong>Before you share, remember Allah.</strong> A photo or video can be forwarded and viewed far beyond the original audience. We should avoid knowingly encouraging or spreading sin.</p><blockquote>“Whoever calls to misguidance will have a burden of sin like that of those who follow him, without that detracting from their sins in the slightest.” <strong>— Sahih Muslim 2674</strong></blockquote><p>Allah warns about those who love immorality to spread among the believers (Surah An-Nur 24:19). Not every accidental appearance necessarily makes someone responsible for every later viewer's actions; intention, knowledge and what is being promoted matter.</p><p><strong>AI can make mistakes.</strong> Check your complete edited media before sharing. This app does not guarantee that all exposed awrah has been found.</p>`,
     social:`<p><strong>HalalFrame does not download videos from YouTube, Facebook, Instagram or TikTok links.</strong></p><p>When a creator and the platform permit saving a video, use that app's own Save or Download option, or use footage you recorded yourself. Then open the saved media in HalalFrame using <strong>Choose a file</strong>.</p><p>On Android, install HalalFrame as an app. From Gallery or Files, tap <strong>Share → HalalFrame</strong> to send a video or image file directly into the editor. Some apps share only a webpage link instead of the media file, which cannot be imported automatically.</p><p>Respect the creator's permissions and applicable platform terms. No external downloader links are used.</p>`,
-    help:`<p><strong>1.</strong> Open a local video or photo. <strong>2.</strong> Pause at the moment you want. Tap a person to load the AI detector, or choose “Draw new box” and drag on the video. <strong>3.</strong> A new region starts at that moment and lasts three seconds by default. Move the scrubber to a later moment, select “Add keyframe” and draw its new position. <strong>4.</strong> Tap Track → or ← to let AI follow it, stopping to ask you when uncertain. <strong>5.</strong> Review the full timeline before sharing.</p><p>Photo JPG/PNG export is included. Video MP4/audio output uses hardware WebCodecs when available and single-thread FFmpeg or WebM fallback, depending on browser support; check the result before sharing.</p>`
+    help:`<p><strong>1.</strong> Open a local video or photo. <strong>2.</strong> Pause at the moment you want. Tap a person to load the AI detector, or choose “Draw new box” and drag on the video. <strong>3.</strong> Tap a person once: HalalFrame automatically follows them forwards and backwards through the complete clip. No extra Track button needed. <strong>4.</strong> Manual Draw boxes keep a short editable time range with optional position keyframes. <strong>5.</strong> Review the entire result before sharing.</p><p>Photo JPG/PNG export is included. Video MP4/audio output uses hardware WebCodecs when available and single-thread FFmpeg or WebM fallback, depending on browser support; check the result before sharing.</p>`
   };$('info-content').innerHTML=content[type];$('info-modal').classList.remove('hidden');}
 
 function chosenExportOptions(){return {
@@ -490,23 +583,181 @@ function refreshEstimate(){
   $('export-estimate').textContent=`${est.width}×${est.height} · max ${Math.round(est.fps)} fps · ${Math.round(est.bitRate/1000)} kbps video · estimated ${(est.bytes/1024/1024).toFixed(1)} MB${est.canFit?'':' · TARGET MAY NOT FIT'}. Actual size varies.`;
 }
 for(const id of ['export-preset','export-codec','export-fps','export-audio-bitrate','export-channels','export-target-mb','export-speed'])$(id).addEventListener('input',refreshEstimate);
+// Export is a single guided workflow. Never make the user find Audio → Process
+// or Track → hidden far down a phone's editor panel.
+async function ensurePersonCoverage(){
+  if(kind!=='video'||!project)return false;
+  for(const c of [...project.concealments]){
+    if(!needsFullTracking(c,project.video.duration))continue;
+    let attempts=0;
+    while(needsFullTracking(c,project.video.duration)){
+      const decision=await requestDecision('coverage-block-modal',{
+        detail:`${c.label} is not tracked from start to finish. HalalFrame will finish tracking before exporting, so the concealment does not cut out early.`,
+        buttons:{'coverage-finish':'finish','coverage-back':'back'}
+      });
+      if(decision==='back')return false;
+      const completed=await autoTrackPerson(c,{fromExport:true});
+      if(completed&&!needsFullTracking(c,project.video.duration))break;
+      if(++attempts>=3){
+        await requestDecision('coverage-block-modal',{
+          detail:`Unable to finish following ${c.label} after three attempts. Please correct the tracking on the timeline or remove the selection. Export has NOT begun.`,
+          buttons:{'coverage-back':'back'}
+        });
+        return false;
+      }
+    }
+  }
+  return true;
+}
+async function ensureCleanedAudioForExport(){
+  if(audioPanel.mode!=='clean')return true;
+  while(audioPanel.mode==='clean'&&!audioPanel.cleaned){
+    if(audioPanel.busy){
+      await requestDecision('audio-failed-modal',{
+        detail:'Music removal is already processing in the Audio tab. Please wait for it to finish, then press Export again. You can also choose No audio.',
+        buttons:{'audio-failed-silent':'silent','audio-failed-back':'back'}
+      }).then(action=>{if(action==='silent')audioPanel.setMode('none');});
+      return audioPanel.mode==='none';
+    }
+    const controller=beginBusy('Removing music…','Preparing on-device voice separation. Your video stays on your phone.');
+    const cancel=()=>audioPanel.cancel();controller.signal.addEventListener('abort',cancel,{once:true});
+    let ok=false;
+    try{
+      ok=await audioPanel.process({onProgress:(amount,label)=>{
+        progress(.92*amount,amount>.88?`Checking for music… ${Math.round(amount*100)}%`:`Removing music… ${Math.round(amount*100)}% · ${label}`);
+        $('busy-title').textContent=amount>.88?'Checking for music…':'Removing music…';
+      }});
+    }finally{controller.signal.removeEventListener('abort',cancel);endBusy();}
+    if(ok&&audioPanel.cleaned)break;
+    const problem=audioPanel.lastProcessError?.message||'The model was cancelled or returned no cleaned output.';
+    const choice=await requestDecision('audio-failed-modal',{
+      detail:`${problem} The original soundtrack will NOT silently replace cleaned speech. Retry, choose a completely silent export, or review in Audio.`,
+      buttons:{'audio-failed-retry':'retry','audio-failed-silent':'silent','audio-failed-back':'back'}
+    });
+    if(choice==='retry')continue;
+    if(choice==='silent'){audioPanel.setMode('none');return true;}
+    audioPanel.tab('audio');return false;
+  }
+  const check=audioPanel.musicCheck;
+  const riskCount=(check?.blocks||[]).filter(b=>b.state==='risk'||b.state==='caution').length;
+  if(!check?.verified||riskCount){
+    $('audio-risk-mute').disabled=!riskCount;
+    const choice=await requestDecision('audio-risk-modal',{
+      detail:check?.error?`${check.error}. Music verification is not available; we cannot label this audio clean. Choose No audio or explicitly accept the risk.`:
+        `Music check using ${check?.modelUsed||'the selected model'} flagged ${riskCount} possible music/instrument section(s). Your options determine how much audio is retained. No AI can guarantee music is completely removed.`,
+      buttons:{'audio-risk-mute':'mute','audio-risk-silent':'silent','audio-risk-anyway':'anyway','audio-risk-back':'back'}
+    });
+    $('audio-risk-mute').disabled=false;
+    if(choice==='mute'){
+      if(!riskCount){audioPanel.tab('audio');return false;}
+      audioPanel.muteAllRisks();
+      return true;
+    }
+    if(choice==='silent'){audioPanel.setMode('none');return true;}
+    if(choice==='anyway')return true; // Explicit user choice, never an automatic "passed" state.
+    audioPanel.tab('audio');return false;
+  }
+  return true;
+}
+function exportFileName(sourceName,format='mp4'){
+  const root=(sourceName||'Video').replace(/\.[^.]+$/,'').replace(/[^a-zA-Z0-9_-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,72)||'Video';
+  const date=new Date(),day=[date.getFullYear(),String(date.getMonth()+1).padStart(2,'0'),String(date.getDate()).padStart(2,'0')].join('-');
+  return `HalalFrame_${root}_${day}.${format}`;
+}
+function renderRecentExports(){
+  const container=$('recent-exports');container.replaceChildren();
+  if(!recentExports.length){const label=document.createElement('span');label.className='dim';label.textContent='No exports yet.';container.append(label);return;}
+  for(const entry of recentExports){
+    const row=document.createElement('div');row.className='recent-export-row';
+    const label=document.createElement('span');label.className='dim';label.textContent=`${entry.name} · ${(entry.blob.size/1048576).toFixed(1)} MB`;
+    const actions=document.createElement('div');actions.className='recent-export-actions';
+    const save=document.createElement('button');save.type='button';save.className='btn secondary small';save.textContent='Save again';save.onclick=()=>{downloadBlob(entry.blob,entry.name);toast('Download requested — look in Files → Downloads.');};
+    const view=document.createElement('button');view.type='button';view.className='btn subtle small';view.textContent='View';view.onclick=()=>openResultSheet(entry,false);
+    actions.append(save,view);row.append(label,actions);container.append(row);
+  }
+}
+function rememberExport(result){
+  const entry={...result,url:URL.createObjectURL(result.blob),createdAt:Date.now()};
+  recentExports.unshift(entry);
+  let total=recentExports.reduce((sum,r)=>sum+r.blob.size,0);
+  while(recentExports.length>RECENT_LIMIT||total>300*1024*1024&&recentExports.length>1){
+    const removed=recentExports.pop();total-=removed.blob.size;URL.revokeObjectURL(removed.url);
+  }
+  renderRecentExports();return entry;
+}
+function closeResultSheet(){
+  $('export-success-player').pause();$('export-success-player').removeAttribute('src');$('export-success-player').load();
+  $('export-success-modal').classList.add('hidden');
+}
+function openResultSheet(entry,autoSave=false){
+  if(!entry)return;
+  exportResult=entry;
+  $('export-success-player').src=entry.url;
+  $('export-success-title').textContent='Your edited video is ready';
+  $('export-success-meta').textContent=`${entry.name} · ${(entry.blob.size/1048576).toFixed(1)} MB · ${entry.format.toUpperCase()}`;
+  const iphone=/iPad|iPhone|iPod/i.test(navigator.userAgent);
+  $('export-save-message').textContent=iphone?
+    'On iPhone: tap Share to WhatsApp, then choose Save Video in the iOS share sheet.':
+    'Your export is ready. Look in Files → Downloads after saving. Some browsers require a separate tap on Save to phone.';
+  $('export-success-modal').classList.remove('hidden');
+  if(autoSave&&!iphone&&!entry.autoDownloadRequested){
+    entry.autoDownloadRequested=true; // never trigger a second automatic download
+    try{
+      downloadBlob(entry.blob,entry.name);
+      $('export-save-message').textContent='Download requested automatically. Check Files → Downloads (or your browser Downloads). If you cannot find it, tap Save to phone below. The browser does not report whether it saved successfully.';
+    }catch(error){
+      $('export-save-message').textContent='Automatic save could not start: '+error.message+'. Tap Save to phone below.';
+    }
+  }
+}
+$('export-success-close').onclick=closeResultSheet;
+$('export-done').onclick=closeResultSheet;
+$('export-save-primary').onclick=()=>{if(!exportResult)return;downloadBlob(exportResult.blob,exportResult.name);
+  $('export-save-message').textContent='Download requested. On Android check Files → Downloads; on iPhone use Share → Save Video. If the browser blocks the download, allow downloads for this site.';
+};
+$('export-share-whatsapp').onclick=async()=>{
+  if(!exportResult)return;
+  try{
+    if(await shareBlob(exportResult.blob,exportResult.name)){
+      $('export-save-message').textContent='Share sheet opened. Select WhatsApp, or use Save Video on iPhone.';
+    }else $('export-save-message').textContent='This browser cannot share files directly. Tap Save to phone, then use Gallery/Files → Share → WhatsApp.';
+  }catch(error){if(error.name!=='AbortError')$('export-save-message').textContent='Share failed: '+error.message+'. Save the file and share from Gallery/Files.';}
+};
+$('reopen-export').onclick=()=>openResultSheet(exportResult,false);
+$('export-failed-back').onclick=()=>$('export-failed-modal').classList.add('hidden');
+$('export-failed-retry').onclick=()=>{ $('export-failed-modal').classList.add('hidden');requestExportReview(performVideoExport); };
+$('export-failed-copy').onclick=()=>$('copy-export-diagnostic').click();
+
 async function performVideoExport(){
   if(kind!=='video'||!project||!sourceFile||busyController)return;
+  // First prove that selected people have full-duration tracks. Failure is a
+  // persistent modal with a retry action, not a brief toast.
+  if(!(await ensurePersonCoverage()))return;
+  if(!(await ensureCleanedAudioForExport()))return;
   let audioOptions;
-  try{audioOptions=await audioPanel.exportOptions();}catch(error){toast(error.message);audioPanel.tab('audio');return;}
+  try{audioOptions=await audioPanel.exportOptions();}
+  catch(error){
+    await requestDecision('audio-failed-modal',{
+      detail:error.message+' Please return to Audio and choose a valid soundtrack before exporting.',
+      buttons:{'audio-failed-back':'back'}
+    });audioPanel.tab('audio');return;
+  }
   const options=chosenExportOptions();
-  const controller=beginBusy('Exporting video','Decoding each frame sequentially on this device. Keep the app open.');
+  const controller=beginBusy('Encoding video…','Encoding sequentially on this device. Keep the app open.');
   const previousTime=currentTime();hiddenVideo.pause();$('export-result').classList.add('hidden');$('export-error').classList.add('hidden');
   const started=performance.now();
   try{
     const result=await exportVideo({file:sourceFile,project,maskCache,ai,...options,...audioOptions,signal:controller.signal,
-      onProgress:(p,message)=>progress(p,message),onStatus:message=>$('busy-copy').textContent=message});
+      onProgress:(p,message)=>progress(p,`Encoding video… ${Math.round(p*100)}% · ${message}`),onStatus:message=>$('busy-copy').textContent=message});
     if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
-    exportResult={...result,name:`${project.video.fileName.replace(/\.[^.]+$/,'')}-halalframe.${result.format}`};
+    // The extension matches the ACTUAL file format if the browser falls back.
+    const name=exportFileName(project.video.fileName,result.format);
+    const entry=rememberExport({...result,name});
+    exportResult=entry;
     $('export-result').classList.remove('hidden');
-    $('export-result-title').textContent=`${result.format.toUpperCase()} ready · ${(result.blob.size/1024/1024).toFixed(1)} MB · ${((performance.now()-started)/1000).toFixed(1)}s`;
-    $('export-result-message').textContent=result.warning||`Edited video ready (${audioOptions.audioMode==='none'?'silent':audioOptions.audioMode==='clean'?'edited/cleaned audio':'original soundtrack'}). Review playback before sharing.`;
-    toast('Export finished. Test playback and sound before sharing.');
+    $('export-result-title').textContent=`${result.format.toUpperCase()} ready · ${(result.blob.size/1048576).toFixed(1)} MB · ${((performance.now()-started)/1000).toFixed(1)}s`;
+    $('export-result-message').textContent=result.warning||`Edited video ready (${audioOptions.audioMode==='none'?'no sound':audioOptions.audioMode==='clean'?'AI-processed voice':'original soundtrack'}). Review the complete output before sharing.`;
+    endBusy();openResultSheet(entry,true);
   }catch(e){
     if(e.name==='AbortError')toast('Export cancelled.');
     else{
@@ -517,68 +768,24 @@ async function performVideoExport(){
       $('export-error-code').textContent=videoProbe?`${videoProbe.codec} · ${videoProbe.bitDepth}-bit · ${project.video.width}×${project.video.height}`:'Video codec not identified';
       lastDiagnostic=browserDiagnostics(sourceFile,videoProbe||project.video,{errorCode:code,cause:e.details?.cause||e.message,
         settings:options,elapsedSeconds:(performance.now()-started)/1000});
-      toast('Export failed · '+code+'. See diagnostic details under Export.');
+      $('export-failed-detail').textContent=`${code}: ${e.message} Your video is still loaded. You can try WhatsApp 720p H.264, check the audio mode, or copy diagnostics before retrying.`;
+      $('export-failed-modal').classList.remove('hidden');
     }
-  }finally{endBusy();await seekTo(previousTime).catch(()=>{});}
+  }finally{
+    endBusy();if(Math.abs(previousTime-currentTime())>.03)void seekTo(previousTime).catch(()=>{});
+  }
 }
 $('mp4-export').onclick=()=>{
   if(kind==='video'&&project&&sourceFile&&!busyController){
-    if(audioPanel.mode==='clean'&&!audioPanel.cleaned){toast('Process cleaned audio first, or choose No audio.');audioPanel.tab('audio');return;}
     requestExportReview(performVideoExport);
   }
 };
 $('download-video').onclick=()=>{if(exportResult)downloadBlob(exportResult.blob,exportResult.name);};
 $('share-video').onclick=async()=>{
   if(!exportResult)return;
-  try{if(!(await shareBlob(exportResult.blob,exportResult.name))){downloadBlob(exportResult.blob,exportResult.name);toast('Sharing files is not supported here; downloaded instead.');}}
+  try{if(!(await shareBlob(exportResult.blob,exportResult.name))){openResultSheet(exportResult,false);$('export-save-message').textContent='Sharing files is not supported in this browser. Tap Save to phone, then share from Gallery/Files.';}}
   catch(e){if(e.name!=='AbortError')toast('Sharing failed: '+e.message);}
 };
-async function runModelSelfCheck(){
-  const status=$('model-test-status');status.textContent='AI self-check: downloading model and testing…';
-  try{const img=new Image();img.src='assets/test-person.jpg';await img.decode();const result=await ai.selfCheck(img);
-    status.textContent=`Self-check: ${result.message} · ${result.delegate}`;
-    warmAI();
-  }catch(e){status.textContent='Model failed to load — check internet for first run. '+e.message;}
-}
-$('run-self-check').onclick=runModelSelfCheck;
-// Share Target accepts files, NOT remote video URLs. The service worker puts
-// shared media in local IndexedDB for the short redirect, and this removes it.
-async function consumeIncomingShare(){
-  const params=new URL(location.href).searchParams;
-  const id=params.get('shared'),error=params.get('share-error');
-  if(!id&&!error)return;
-  try{window.history.replaceState(null,'',location.pathname+location.hash);}catch{}
-  if(error){toast(error==='no-file'?'The app shared a link, not a media file. Use its Save option first.':'Could not receive the shared file. Try Choose a file.');return;}
-  try{
-    const file=await takeSharedFile(id);
-    if(!file){toast('Shared media expired or unavailable. Please share again.');return;}
-    // Some file managers supply no MIME type; infer from its extension.
-    const originalType=file.type||'';
-    const type=/^(video|image)\//.test(originalType)?originalType:({mp4:'video/mp4',mov:'video/quicktime',webm:'video/webm',m4v:'video/mp4',jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',webp:'image/webp',gif:'image/gif'}[file.name.split('.').pop().toLowerCase()]||'');
-    const imported=type===file.type?file:new File([file],file.name,{type,lastModified:file.lastModified});
-    await openFile(imported);
-  }catch(e){console.error('Shared media import',e);toast('Could not open the shared media: '+e.message);}
-}
-const firstRun=initFirstRun({initAI:()=>ai.init(),onAIReady:()=>warmAI(),onReady:()=>{void consumeIncomingShare();}});
-let swRegistration=null,swWarmStarted=false;
-function swMessage(data){return new Promise(resolve=>{
-  if(!navigator.serviceWorker.controller)return resolve(null);
-  const ch=new MessageChannel();ch.port1.onmessage=e=>resolve(e.data);
-  navigator.serviceWorker.controller.postMessage(data,[ch.port2]);
-  setTimeout(()=>resolve(null),15000);
-});}
-async function checkAIReady(){
-  const r=await swMessage({type:'AI_STATUS'});
-  if(r?.ready){$('offline-status').textContent='AI ready offline ✓';$('offline-status').classList.add('ready');}
-  else $('offline-status').textContent=`AI cache ${r?.count||0}/${r?.total||8} files`;
-}
-async function warmAI(){
-  if(!navigator.serviceWorker.controller||swWarmStarted)return;
-  swWarmStarted=true;
-  const channel=new MessageChannel();
-  channel.port1.onmessage=e=>{if(e.data?.done){if(!e.data.ready)swWarmStarted=false;checkAIReady();channel.port1.close();}};
-  navigator.serviceWorker.controller.postMessage({type:'WARM_AI'},[channel.port2]);
-}
 // Only show "Update ready" for a GENUINELY waiting, newer service worker.
 // The old controllerchange/SW_ACTIVATED handler showed a permanent false toast
 // because skipWaiting activates the worker immediately on every deployment.
