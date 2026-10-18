@@ -38,8 +38,11 @@ export function smoothRiskGate(audio,rate,riskRanges,{fadeMs=35}={}){
   }
   return audio.map(ch=>{const out=new Float32Array(ch);for(let i=0;i<out.length;i++)out[i]*=gain[i];return out;});
 }
-export async function verifyMusic({original,cleaned,rate,strict=false,onProgress=()=>{}}){
-  const task=await initMusicClassifier();
+export async function verifyMusic({original,cleaned,rate,strict=false,onProgress=()=>{},signal,taskOverride=null}){
+  // Tasks Audio's internal importScripts() requires a document or CLASSIC worker.
+  // This function is intentionally called on the MAIN thread by AudioPanel.
+  // Yield between 1-second classifications to avoid long frozen UI frames.
+  const task=taskOverride||await initMusicClassifier();
   const n=Math.max(1,Math.ceil(original[0].length/rate)),blocks=[];
   function monoChunk(channels,index){
     const lo=Math.round(index*rate),duration=Math.max(1,Math.round(rate*.975)),out=new Float32Array(duration);
@@ -50,6 +53,8 @@ export async function verifyMusic({original,cleaned,rate,strict=false,onProgress
     return out;
   }
   for(let i=0;i<n;i++){
+    if(signal?.aborted)throw new DOMException('Music check cancelled','AbortError');
+    await new Promise(resolve=>setTimeout(resolve,0));
     const before=interpretYamnet(task.classify(monoChunk(original,i),rate));
     const after=interpretYamnet(task.classify(monoChunk(cleaned,i),rate));
     blocks.push({start:i,end:Math.min((i+1),original[0].length/rate),before:before.music,after:after.music,speech:Math.max(before.speech,after.speech),

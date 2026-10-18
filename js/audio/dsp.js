@@ -226,3 +226,65 @@ export function suppressSteadyTones({original,vocals,gate,rate,onProgress=()=>{}
   onProgress(1);
   return {channels:output,tones};
 }
+
+/** Maximum-only conservative broadband instrumental bleed suppressor.
+ * Estimate a reference spectrum from VAD non-speech portions of the ORIGINAL;
+ * subtract a bounded portion from the separated vocal spectrum during speech.
+ * This is NOT a trained speech/music separator and may alter speech timbre.
+ */
+export function suppressBedLeakage({original,vocals,gate,rate,onProgress=()=>{}}){
+  const nfft=2048,hop=512,bins=nfft/2,length=vocals[0]?.length||0;
+  if(!length||gate.length!==length)return {channels:vocals,referenceFrames:0};
+  const win=hann(nfft),spectrum=new Float64Array(bins+1);
+  const frames=Math.max(1,Math.ceil((length-nfft)/hop)+1);
+  let referenceFrames=0;
+  for(let frame=0;frame<frames;frame++){
+    const at=frame*hop+Math.floor(nfft/2);
+    if(gate[Math.min(length-1,at)]>.02)continue;
+    const re=new Float64Array(nfft),im=new Float64Array(nfft);
+    for(let i=0;i<nfft;i++){
+      const k=frame*hop+i;
+      re[i]=(k<length?(original.length>1?(original[0][k]+original[1][k])*.5:original[0][k]):0)*win[i];
+    }
+    fft(re,im);
+    for(let k=0;k<=bins;k++)spectrum[k]+=Math.hypot(re[k],im[k]);
+    referenceFrames++;
+  }
+  if(referenceFrames<3)return {channels:vocals,referenceFrames};
+  for(let k=0;k<=bins;k++)spectrum[k]/=referenceFrames;
+  const smoothed=new Float64Array(bins+1);
+  for(let k=0;k<=bins;k++){
+    let v=0,den=0;
+    for(let q=-2;q<=2;q++){const n=k+q;if(n<0||n>bins)continue;const w=3-Math.abs(q);v+=spectrum[n]*w;den+=w;}
+    smoothed[k]=v/Math.max(1,den);
+  }
+  const out=vocals.map(()=>new Float32Array(length)),weights=new Float32Array(length);
+  for(let frame=0;frame<frames;frame++){
+    const begin=frame*hop;
+    for(let ch=0;ch<out.length;ch++){
+      const re=new Float64Array(nfft),im=new Float64Array(nfft);
+      for(let i=0;i<nfft;i++){const k=begin+i;re[i]=(k<length?vocals[ch][k]:0)*win[i];}
+      fft(re,im);
+      for(let k=1;k<bins;k++){
+        const magnitude=Math.hypot(re[k],im[k]);
+        // Maximum only: floor preserves intelligibility; remove no more than
+        // 60% of a mixed spectral bin, concentrated below 6 kHz.
+        const frequency=k*rate/nfft;
+        const strength=frequency<110?0.38:frequency>6000?0.25:0.70;
+        const g=Math.max(.40,1-strength*smoothed[k]/Math.max(1e-7,magnitude));
+        re[k]*=g;im[k]*=g;re[nfft-k]*=g;im[nfft-k]*=g;
+      }
+      fft(re,im,true);
+      for(let i=0;i<nfft&&begin+i<length;i++){
+        const k=begin+i,w=win[i];out[ch][k]+=re[i]*w;
+        if(ch===0)weights[k]+=w*w;
+      }
+    }
+    if(frame%40===0)onProgress(frame/frames);
+  }
+  for(let ch=0;ch<out.length;ch++)for(let i=0;i<length;i++){
+    out[ch][i]=gate[i]*(weights[i]>1e-8?out[ch][i]/weights[i]:vocals[ch][i]);
+  }
+  onProgress(1);
+  return {channels:out,referenceFrames};
+}

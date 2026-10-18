@@ -1,7 +1,7 @@
 // Fully on-device Silero VAD + UVR MDX-Net vocal-isolation worker.
 // No microphone, server endpoint, API token, or media upload is used.
 // Workers have their own module realm: the document import map does not apply here.
-const RELEASE=new URL(import.meta.url).searchParams.get('v')||'1.6';
+const RELEASE=new URL(import.meta.url).searchParams.get('v')||'1.7';
 // Register before ANY asynchronous imports. A module worker can otherwise
 // lose the first process message while its top-level await is evaluating.
 self.onmessage=({data})=>{
@@ -19,14 +19,14 @@ self.postMessage?.({type:'ready',version:RELEASE});
 
 const AUDIO_CACHE='halalframe-audio-models-v1.5'; // retain user's existing offline downloads
 let ort=null, vadSession=null, stemSession=null,stemKey=null,stemDelegate=null;
-let MODELS,DEMUCS,ORT_BASE,VAD_URL,resample,stftChunk,istftChunk,blendChunks,deriveGate,HOP,FRAMES,suppressSteadyTones;
+let MODELS,DEMUCS,ORT_BASE,VAD_URL,resample,stftChunk,istftChunk,blendChunks,deriveGate,HOP,FRAMES,suppressSteadyTones,suppressBedLeakage;
 let depsPromise=null;
 function loadDependencies(){
   return depsPromise??=Promise.all([
     import(`./models.js?v=${RELEASE}`),import(`./dsp.js?v=${RELEASE}`)
   ]).then(([models,dsp])=>{
     ({MODELS,DEMUCS,ORT_BASE,VAD_URL}=models);
-    ({resample,stftChunk,istftChunk,blendChunks,deriveGate,HOP,FRAMES,suppressSteadyTones}=dsp);
+    ({resample,stftChunk,istftChunk,blendChunks,deriveGate,HOP,FRAMES,suppressSteadyTones,suppressBedLeakage}=dsp);
   }).catch(error=>{depsPromise=null;throw error;});
 }
 const pct=(stage,ratio,message,job)=>self.postMessage({type:'progress',job,stage,ratio,detail:message});
@@ -40,28 +40,54 @@ async function loadRuntime(){
   ort.env.wasm.wasmPaths=ORT_BASE;ort.env.wasm.numThreads=1;
   return ort;
 }
+// All downloads are streamed and reported in BYTES. No indefinite 'downloading'
+// state: first-byte and stalled transfers time out, and a failed Studio load
+// falls back to the already supported Best model.
 async function fetchPinned(url,bytesExpected,job,label,sha){
   const cache=await caches.open(AUDIO_CACHE);
-  let cached=await cache.match(url);
+  const cached=await cache.match(url);
   if(cached){pct('models',1,`${label}: cached`,job);return new Uint8Array(await cached.arrayBuffer());}
-  const response=await fetch(url,{cache:'no-store'});
-  if(!response.ok)throw new Error(`${label} download failed: HTTP ${response.status}. Check the internet for first use.`);
-  if(response.type==='opaque')throw new Error(`${label} host does not allow browser downloads (CORS).`);
-  const reader=response.body?.getReader();let data;
-  if(reader){const pieces=[];let count=0;
-    while(true){const {value,done}=await reader.read();if(done)break;pieces.push(value);count+=value.byteLength;
-      const expected=bytesExpected||(DEMUCS&&url===DEMUCS.url?DEMUCS.size:2300000);
-      pct('models',Math.min(.99,count/Math.max(1,expected)),`Downloading ${label}: ${(count/1048576).toFixed(1)} / ~${(expected/1048576).toFixed(1)} MB`,job);
+  pct('models',.001,`Connecting to ${label}… (0 / ${(bytesExpected/1048576).toFixed(1)} MB)`,job);
+  const controller=new AbortController();
+  let timer,stage='connecting';
+  const refresh=ms=>{clearTimeout(timer);timer=setTimeout(()=>controller.abort(new Error(`${label}: ${stage} timed out after ${Math.round(ms/1000)} seconds`)),ms);};
+  const started=performance.now();refresh(25000);
+  let response,reader;
+  try{
+    response=await fetch(url,{cache:'no-store',signal:controller.signal,mode:'cors'});
+    if(!response.ok)throw new Error(`${label}: HTTP ${response.status}. Try Best instead.`);
+    if(response.type==='opaque')throw new Error(`${label}: the model host blocks browser downloads (CORS).`);
+    stage='receiving bytes';refresh(30000);
+    const total=Number(response.headers.get('content-length'))||bytesExpected||2300000;
+    reader=response.body?.getReader();let data;
+    if(reader){
+      const pieces=[];let count=0;
+      while(true){
+        if(performance.now()-started>240000)throw new Error(`${label}: download exceeded four minutes; use Best instead.`);
+        const {value,done}=await reader.read();if(done)break;
+        pieces.push(value);count+=value.byteLength;refresh(30000);
+        pct('models',Math.min(.98,count/Math.max(1,total)),
+          `${label}: ${(count/1048576).toFixed(1)} / ${(total/1048576).toFixed(1)} MB downloaded`,job);
+      }
+      data=new Uint8Array(count);let at=0;for(const piece of pieces){data.set(piece,at);at+=piece.length;}
+    }else{
+      // Older browsers without a ReadableStream still have the 30s watchdog.
+      data=new Uint8Array(await response.arrayBuffer());
+      pct('models',.99,`${label}: ${(data.byteLength/1048576).toFixed(1)} MB received`,job);
     }
-    data=new Uint8Array(count);let at=0;for(const piece of pieces){data.set(piece,at);at+=piece.length;}
-  }else{data=new Uint8Array(await response.arrayBuffer());}
-  if(bytesExpected&&Math.abs(data.length-bytesExpected)>2000)throw new Error(`${label} downloaded an unexpected file size; refusing to run it.`);
-  if(sha){const hex=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',data))).map(b=>b.toString(16).padStart(2,'0')).join('');
-    if(hex!==sha)throw new Error(`${label} failed the SHA-256 verification. Do not use this model.`);
-  }
-  await cache.put(url,new Response(data,{headers:{'content-type':'application/octet-stream'}})).catch(()=>{});
-  pct('models',1,`${label}: downloaded and cached`,job);
-  return data;
+    if(bytesExpected&&Math.abs(data.length-bytesExpected)>2000)throw new Error(`${label}: unexpected file size (${data.length} bytes).`);
+    if(sha){
+      stage='verifying checksum';refresh(60000);
+      const hex=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',data))).map(b=>b.toString(16).padStart(2,'0')).join('');
+      if(hex!==sha)throw new Error(`${label}: checksum mismatch. Refusing unverified model weights.`);
+    }
+    await cache.put(url,new Response(data,{headers:{'content-type':'application/octet-stream'}})).catch(()=>{});
+    pct('models',1,`${label}: downloaded and cached (${(data.length/1048576).toFixed(1)} MB)`,job);
+    return data;
+  }catch(error){
+    if(controller.signal.aborted)throw new Error(`${label} did not transfer data in time. Select Best; the Studio host may be unreachable from this browser.`);
+    throw error;
+  }finally{clearTimeout(timer);await reader?.cancel().catch(()=>{});}
 }
 async function sessionFrom(url,size,job,name,sha,{preferGPU=true}={}){
   await loadRuntime();const bytes=await fetchPinned(url,size,job,name,sha);
@@ -182,46 +208,41 @@ async function processAudio(message){
   const scores=await voiceActivity(input,sampleRate,job);
   const gate=deriveGate(scores,sampleRate,input[0].length,{strength});
   const speechEnergy=gate.reduce((n,v)=>n+(v>.5?1:0),0)/Math.max(1,gate.length);
-  let result;
+  let result,modelUsed=quality,studioWarning='';
   if(speechEnergy<.005){
     // Music/silence only: do not download a heavy separator needlessly.
     result=input.map(x=>new Float32Array(x.length));
     pct('separate',1,'No speech detected — muted all audio',job);
   }else{
-    const vocals=quality==='studio'?await isolateDemucs(input,sampleRate,job):await isolateStem(input,sampleRate,quality,job);
+    let vocals;
+    if(quality==='studio'){
+      try{vocals=await isolateDemucs(input,sampleRate,job);}
+      catch(error){
+        studioWarning=`Studio unavailable (${error.message}). Used Best MDX-Net instead.`;
+        pct('models',0,studioWarning,job);
+        modelUsed='best';
+        vocals=await isolateStem(input,sampleRate,'best',job);
+      }
+    }else vocals=await isolateStem(input,sampleRate,quality,job);
     result=applyGateAndStrict({original:input,vocals,gate,rate:sampleRate,strength,strict});
     if(strength==='maximum'){
       pct('refine',0,'Maximum: identifying persistent musical tones…',job);
       const refined=suppressSteadyTones({original:input,vocals:result,gate,rate:sampleRate,
         onProgress:ratio=>pct('refine',ratio,'Maximum: reducing persistent tones under speech…',job)});
       result=refined.channels;
-      pct('refine',1,refined.tones?`Maximum: reduced ${refined.tones} stable tonal frequencies; listen for residual music`:
-        'Maximum: no reliable music-only tonal reference; voice isolation retained',job);
+      pct('refine',.75,refined.tones?`Maximum: reduced ${refined.tones} steady tones`:
+        'Maximum: no strong tonal reference; using conservative broadband analysis',job);
+      const bed=suppressBedLeakage({original:input,vocals:result,gate,rate:sampleRate,
+        onProgress:p=>pct('refine',.75+.24*p,'Maximum: reducing residual drums/bass/chords where safe…',job)});
+      result=bed.channels;
+      pct('refine',1,`Maximum spectral pass: ${bed.referenceFrames} music-only reference frames; review for voice changes`,job);
     }
   }
-  // Second independent classifier: never infer success merely because the
-  // separator completed. Music/music-instrument labels are probabilities,
-  // and an unavailable classifier is explicitly UNVERIFIED.
-  let musicCheck={verified:false,remainingRisk:null,blocks:[],error:'Music classifier not run'};
-  try{
-    pct('music-check',0,'Music check: listening for remaining instruments…',job);
-    const {verifyMusic,smoothRiskGate}=await import(`./music-check.js?v=${RELEASE}`);
-    musicCheck=await verifyMusic({original:input,cleaned:result,rate:sampleRate,strict,
-      onProgress:p=>pct('music-check',p,'Comparing original and processed music scores…',job)});
-    if(musicCheck.remainingRisk>0){
-      const silence=musicCheck.blocks.filter(b=>b.state==='risk'&&(strict||b.speech<.34));
-      if(silence.length){
-        result=smoothRiskGate(result,sampleRate,silence);
-        musicCheck=await verifyMusic({original:input,cleaned:result,rate:sampleRate,strict,
-          onProgress:p=>pct('music-check',p,'Rechecking the safety-muted segments…',job)});
-        musicCheck.extraMuted=silence.length;
-      }
-    }
-    pct('music-check',1,musicCheck.verified?'Music check found no high-confidence instrument segments':'Music still possible — review red timeline sections before sharing',job);
-  }catch(error){
-    musicCheck={verified:false,remainingRisk:null,blocks:[],error:'YAMNet check unavailable: '+error.message};
-    pct('music-check',1,musicCheck.error+' · use No audio for highest certainty',job);
-  }
+  // Do not invoke MediaPipe tasks-audio in this module worker. Its internal
+  // importScripts() crashes here. The document's AudioPanel performs YAMNet
+  // AFTER the worker returns the separated PCM audio.
+  pct('separate',1,'Voice separation complete · checking music on the main thread next',job);
   const transfer=result.map(x=>x.buffer);
-  postMessage({type:'complete',job,channels:transfer,sampleRate,speechPercent:Math.round(100*speechEnergy),elapsed:secs()-started,musicCheck,model:quality},transfer);
+  postMessage({type:'complete',job,channels:transfer,sampleRate,speechPercent:Math.round(100*speechEnergy),
+    elapsed:secs()-started,model:modelUsed,studioWarning,musicCheck:{verified:false,blocks:[],error:'Awaiting browser Music check'}},transfer);
 }
