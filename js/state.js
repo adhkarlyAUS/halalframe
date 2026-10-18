@@ -3,7 +3,7 @@ export const clone = v => structuredClone(v);
 export const makeId = () => globalThis.crypto?.randomUUID?.() || `hf-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 export const seconds = (s) => { const n = Math.max(0,s||0); return `${Math.floor(n/60).toString().padStart(2,'0')}:${(n%60).toFixed(2).padStart(5,'0')}`; };
 export function createProject(video) {
-  return { version: '1.1', video: { duration: Number(video.duration)||0, fps: Number(video.fps)||30, width: video.width, height: video.height, fileName: video.fileName||'', fileSize: video.fileSize||0 }, concealments: [] };
+  return { version: '1.3', video: { duration: Number(video.duration)||0, fps: Number(video.fps)||30, width: video.width, height: video.height, fileName: video.fileName||'', fileSize: video.fileSize||0, fileLastModified: video.fileLastModified||0 }, concealments: [] };
 }
 export function normalizedBox(b) {
   const x=clamp(b.x,0,1), y=clamp(b.y,0,1);
@@ -12,7 +12,7 @@ export function normalizedBox(b) {
 export function newConcealment(project, box, t, { label, source='manual' } = {}) {
   const startTime=clamp(t,0,project.video.duration), endTime=Math.min(project.video.duration,startTime+3);
   return { id:makeId(), label:label||`Region ${project.concealments.length+1}`,
-    startTime, endTime, shape:'box', effect:'black', strength:18, padding:0.12, feather:0, safetyMargin:8, includeFace:false,
+    startTime, endTime, shape:'box', effect:'blur', strength:18, padding:0.15, feather:0, safetyMargin:8, includeFace:false,
     track:[{t:startTime,...normalizedBox(box),confidence:1,source}] };
 }
 export function addPoint(c, t, box, source='manual', confidence=1) {
@@ -42,6 +42,35 @@ export class History {
   get canUndo(){return this.cursor>0;} get canRedo(){return this.cursor<this.entries.length-1;}
 }
 const DB_NAME='halalframe-projects', STORE='drafts';
-function openDB(){return new Promise((res,rej)=>{if(!indexedDB)return rej(new Error('IndexedDB unavailable'));const req=indexedDB.open(DB_NAME,1);req.onupgradeneeded=()=>req.result.createObjectStore(STORE);req.onsuccess=()=>res(req.result);req.onerror=()=>rej(req.error);});}
-export async function saveProject(project){const db=await openDB();try{await new Promise((res,rej)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).put({project,at:Date.now()},'latest');tx.oncomplete=res;tx.onerror=()=>rej(tx.error);});}finally{db.close();}}
-export async function loadSavedProject(){const db=await openDB();try{return await new Promise((res,rej)=>{const r=db.transaction(STORE,'readonly').objectStore(STORE).get('latest');r.onsuccess=()=>res(r.result||null);r.onerror=()=>rej(r.error);});}finally{db.close();}}
+function openDB(){return new Promise((res,rej)=>{
+  if(typeof indexedDB==='undefined')return rej(new Error('IndexedDB unavailable'));
+  const req=indexedDB.open(DB_NAME,1);
+  req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains(STORE))req.result.createObjectStore(STORE);};
+  req.onsuccess=()=>res(req.result);req.onerror=()=>rej(req.error);
+});}
+// Serialize every write and delete in submission order. The previous design
+// allowed a delayed save to resurrect a region deleted moments earlier.
+let writeChain=Promise.resolve();
+const orderedWrite=fn=>{const done=writeChain.catch(()=>{}).then(fn);writeChain=done.catch(()=>{});return done;};
+async function dbWrite(operation,record){const db=await openDB();try{
+  return await new Promise((res,rej)=>{
+    const tx=db.transaction(STORE,'readwrite'),store=tx.objectStore(STORE);
+    if(operation==='delete')store.delete('latest');else store.put(record,'latest');
+    tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error||new Error('Project save aborted'));
+  });
+}finally{db.close();}}
+export async function saveProject(project){
+  const record={project:clone(project),at:Date.now()};
+  return orderedWrite(()=>dbWrite('put',record));
+}
+export async function clearSavedProject(){return orderedWrite(()=>dbWrite('delete'));}
+export async function loadSavedProject(){
+  // Read after all queued writes have completed to avoid resurrecting edits.
+  await writeChain.catch(()=>{});
+  const db=await openDB();try{
+    return await new Promise((res,rej)=>{
+      const tx=db.transaction(STORE,'readonly'),r=tx.objectStore(STORE).get('latest');
+      r.onsuccess=()=>res(r.result||null);r.onerror=()=>rej(r.error);
+    });
+  }finally{db.close();}
+}

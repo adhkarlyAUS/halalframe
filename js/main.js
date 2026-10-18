@@ -1,4 +1,4 @@
-import {createProject,newConcealment,addPoint,boxAt,clamp,clone,History,seconds,saveProject,loadSavedProject} from './state.js';
+import {createProject,newConcealment,addPoint,boxAt,clamp,clone,History,seconds,saveProject,loadSavedProject,clearSavedProject} from './state.js';
 import {renderFrame} from './engine/render.js';
 import {MaskCache} from './engine/segmentation.js';
 import {PersonAI,nearestPerson} from './engine/ai.js';
@@ -60,10 +60,30 @@ function refresh({renderOnly=false}={}){
     $('start-time').value=c.startTime.toFixed(2);$('end-time').value=c.endTime.toFixed(2);
     $('feather').value=c.feather||0;$('feather-label').textContent=(c.feather||0)+'px';
     $('safety-margin').value=c.safetyMargin??8;$('safety-label').textContent=(c.safetyMargin??8)+'px';
-    $('include-face').checked=!!c.includeFace;
+    $('include-face').checked=!!c.includeFace;$('whole-frame').checked=!!c.wholeFrame;
   }
 }
 function snapshot(){if(!project)return;maskCache.clear();history.record(project);refresh();scheduleSave();}
+// Deletes and Clear must be durable before another deferred autosave can run.
+async function persistNow(){clearTimeout(saveTimer);if(!project)return false;try{await saveProject(project);return true;}catch(e){toast('Could not save edits: '+e.message);return false;}}
+async function chooseSavedProject(saved){
+  $('restore-description').textContent=`${saved.project.concealments.length} saved region(s) were found for this video. Restore them, or start fresh with a clean timeline.`;
+  $('restore-modal').classList.remove('hidden');
+  return await new Promise(resolve=>{
+    $('restore-yes').onclick=()=>{$('restore-modal').classList.add('hidden');resolve(true);};
+    $('restore-fresh').onclick=()=>{$('restore-modal').classList.add('hidden');resolve(false);};
+  });
+}
+async function clearProject(){
+  if(!project||busyController)return;
+  if(!confirm('Clear every concealment and the saved draft for this video? This cannot be undone.'))return;
+  clearTimeout(saveTimer);history.reset(createProject(project.video));project=createProject(project.video);
+  selectedId=null;scanResults=[];aiBoxes=[];maskCache.clear();exportResult=null;
+  $('export-result').classList.add('hidden');
+  try{await clearSavedProject();toast('Project cleared. All saved regions removed.');}
+  catch(e){toast('Could not clear saved draft: '+e.message);}
+  refresh();
+}
 function scheduleSave(){clearTimeout(saveTimer);saveTimer=setTimeout(()=>saveProject(project).catch(()=>{}),500);}
 function updateDirect(fn,{save=false,refreshUI=true}={}){if(!project)return;fn();if(save)snapshot();else if(refreshUI)refresh();else render();}
 function selectMask(id){selectedId=id;refresh();}
@@ -75,7 +95,7 @@ function setTool(mode){tool=mode;input.setMode(mode==='key'?'draw':mode==='draw'
 async function openFile(file){
   if(!file)return;
   if(!/^image\//.test(file.type)&&!/^video\//.test(file.type)){toast('Choose an image or video');return;}
-  busyController?.abort();if(reviewResolve){reviewResolve({action:'end'});reviewResolve=null;}
+  clearTimeout(saveTimer);busyController?.abort();if(reviewResolve){reviewResolve({action:'end'});reviewResolve=null;}
   if(sourceURL)URL.revokeObjectURL(sourceURL);
   sourceURL=URL.createObjectURL(file);kind=file.type.startsWith('image/')?'photo':'video';
   ai.resetCache();maskCache.clear();aiBoxes=[];selectedId=null;hiddenVideo.pause();
@@ -85,7 +105,7 @@ async function openFile(file){
   try{
     if(kind==='photo'){
       const img=new Image();img.src=sourceURL;await img.decode();media=img;
-      info={duration:0,fps:1,width:img.naturalWidth,height:img.naturalHeight,fileName:file.name,fileSize:file.size};
+      info={duration:0,fps:1,width:img.naturalWidth,height:img.naturalHeight,fileName:file.name,fileSize:file.size,fileLastModified:file.lastModified};
     } else {
       media=hiddenVideo;hiddenVideo.src=sourceURL;hiddenVideo.load();
       await new Promise((resolve,reject)=>{
@@ -96,15 +116,21 @@ async function openFile(file){
         hiddenVideo.addEventListener('loadeddata',ok,{once:true});hiddenVideo.addEventListener('error',bad,{once:true});
       });
       const d=dims(hiddenVideo);
-      info={duration:Number(hiddenVideo.duration)||0,fps:30,width:d.width,height:d.height,fileName:file.name,fileSize:file.size};
+      info={duration:Number(hiddenVideo.duration)||0,fps:30,width:d.width,height:d.height,fileName:file.name,fileSize:file.size,fileLastModified:file.lastModified};
       if(!Number.isFinite(info.duration)||info.duration<=0)throw new Error('The video duration is not available. Try an MP4 file.');
       if(info.duration>180)toast('Videos over 3 minutes may be slow or use substantial memory.');
     }
     project=createProject(info);sourceFile=file;exportResult=null;$('export-result').classList.add('hidden');
     const saved=await loadSavedProject().catch(()=>null);
-    if(saved?.project?.video?.fileName===file.name&&saved?.project?.video?.fileSize===file.size&&saved?.project?.video?.width===info.width&&saved.project.video.height===info.height){
-      if(confirm('Restore your saved concealments for this file?')){
-        project=saved.project;project.video.duration=info.duration;
+    const old=saved?.project?.video;
+    const isSameVideo=old?.fileName===file.name&&old?.fileSize===file.size&&old?.width===info.width&&old?.height===info.height&&
+      (!old.fileLastModified||old.fileLastModified===file.lastModified);
+    if(isSameVideo&&saved.project.concealments?.length){
+      if(await chooseSavedProject(saved)){
+        project=clone(saved.project);project.version='1.3';project.video.duration=info.duration;
+      }else{
+        // Don't leave an older draft behind when the user explicitly starts fresh.
+        await clearSavedProject();
       }
     }
     history.reset(project);
@@ -232,10 +258,10 @@ function editSelection(field,value){const c=selected();if(!c)return;
   if(field==='endTime')value=clamp(Number(value),c.startTime,project.video.duration);
   c[field]=value;snapshot();}
 function duplicateMask(){const c=selected();if(!c)return;const newC=clone(c);newC.id=crypto.randomUUID();newC.label=`${c.label} copy`;project.concealments.push(newC);selectedId=newC.id;snapshot();}
-function deleteMask(){const c=selected();if(!c)return;project.concealments=project.concealments.filter(x=>x.id!==c.id);selectedId=null;snapshot();toast('Region removed.');}
+function deleteMask(){const c=selected();if(!c)return;project.concealments=project.concealments.filter(x=>x.id!==c.id);selectedId=null;snapshot();void persistNow().then(ok=>{if(ok)toast('Region removed and saved.');});}
 function restore(value){if(!value)return;maskCache.clear();project=value;if(!project.concealments.some(c=>c.id===selectedId))selectedId=null;refresh();scheduleSave();}
 // Transport controls, UI, keyboard shortcuts
-$('file-input').addEventListener('change',e=>openFile(e.target.files[0]));$('new-file').onclick=()=>$('file-input').click();
+$('file-input').addEventListener('change',e=>openFile(e.target.files[0]));$('new-file').onclick=()=>$('file-input').click();$('clear-project').onclick=clearProject;
 $('audio-toggle').onclick=()=>{hiddenVideo.muted=!hiddenVideo.muted;$('audio-toggle').textContent=hiddenVideo.muted?'🔇':'🔊';};
 $('play').onclick=async()=>{if(kind!=='video'||!project)return;if(hiddenVideo.paused){try{await hiddenVideo.play();}catch(e){toast('Playback unavailable: '+e.message);}}else hiddenVideo.pause();render();};
 for(const [id,dt] of [['back-sec',-1],['next-sec',1],['back-frame',-1/30],['next-frame',1/30]]){
@@ -289,7 +315,8 @@ $('include-face').onchange=e=>{if(!selected())return;selected().includeFace=e.ta
 $('preview-mask').onchange=()=>render();
 
 $('start-time').onchange=e=>editSelection('startTime',e.target.value);$('end-time').onchange=e=>editSelection('endTime',e.target.value);
-$('whole-video').onclick=()=>{const c=selected();if(!c)return;c.startTime=0;c.endTime=project.video.duration;snapshot();toast('Whole-video range explicitly applied.');};
+$('whole-video').onclick=()=>{const c=selected();if(!c)return;c.startTime=0;c.endTime=project.video.duration;snapshot();toast('Whole-video time range applied.');};
+$('whole-frame').onchange=e=>{const c=selected();if(!c)return;c.wholeFrame=e.target.checked;snapshot();toast(c.wholeFrame?'Entire frame selected intentionally.':'Region-only masking restored.');};
 $('undo').onclick=()=>restore(history.undo());$('redo').onclick=()=>restore(history.redo());
 $('debug').onchange=()=>{$('self-check-tools').classList.toggle('hidden',!$('debug').checked);render();};
 $('jpg-export').onclick=async()=>{if(kind!=='photo')return;if(!$('review-ack').checked){toast('Review your image and tick the acknowledgement before export.');return;}
@@ -366,14 +393,45 @@ async function warmAI(){
   channel.port1.onmessage=e=>{if(e.data?.done){checkAIReady();channel.port1.close();}};
   navigator.serviceWorker.controller.postMessage({type:'WARM_AI'},[channel.port2]);
 }
+function showUpdate(){
+  const banner=$('update-banner');banner.classList.remove('hidden');
+  if(!project&&!busyController&&!trackingActive){
+    const key='halalframe-auto-reloaded-'+APP_VERSION;
+    if(!sessionStorage.getItem(key)){sessionStorage.setItem(key,'1');location.reload();}
+  }
+}
 async function initPWA(){
   if(!('serviceWorker'in navigator)||location.protocol==='file:')return;
-  try{swRegistration=await navigator.serviceWorker.register('./sw.js',{scope:'./'});
+  const previous=navigator.serviceWorker.controller;
+  try{
+    navigator.serviceWorker.addEventListener('controllerchange',()=>{
+      if(previous&&navigator.serviceWorker.controller?.scriptURL!==previous.scriptURL)showUpdate();
+      checkAIReady();
+    });
+    navigator.serviceWorker.addEventListener('message',e=>{
+      if(e.data?.type==='SW_ACTIVATED'&&previous&&e.data.version!==new URL(previous.scriptURL).searchParams.get('v'))showUpdate();
+    });
+    swRegistration=await navigator.serviceWorker.register(`./sw.js?v=${APP_VERSION}`,{scope:'./',updateViaCache:'none'});
     await navigator.serviceWorker.ready;
     if(!navigator.serviceWorker.controller)await new Promise(resolve=>{navigator.serviceWorker.addEventListener('controllerchange',resolve,{once:true});setTimeout(resolve,2500);});
     await checkAIReady();
+    swRegistration.update().catch(()=>{});
   }catch(e){$('offline-status').textContent='Offline install unavailable';}
 }
+$('update-reload').onclick=()=>location.reload();
+// A tab left open for days should discover an update even if the browser does
+// not immediately check for a new SW. Only the tiny HTML file is fetched.
+async function checkForNewRelease(){
+  if(location.protocol==='file:')return;
+  try{
+    const response=await fetch(`./index.html?version-check=${Date.now()}`,{cache:'no-store'});
+    if(!response.ok)return;
+    const found=(await response.text()).match(/const APP_VERSION=['"]([^'"]+)['"]/);
+    if(found&&found[1]!==APP_VERSION)showUpdate();
+  }catch{} // Do not show a false update when offline.
+}
+window.addEventListener('visibilitychange',()=>{if(!document.hidden)checkForNewRelease();});
+setInterval(checkForNewRelease,180000);
 tutorial();initPWA();setTimeout(runModelSelfCheck,1200);
 window.addEventListener('keydown',e=>{if(e.target.matches('input,select,textarea'))return;
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();restore(e.shiftKey?history.redo():history.undo());}
