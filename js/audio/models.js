@@ -11,3 +11,14 @@ export const MODELS={
 };
 export const AUDIO_MODEL_URLS=[VAD_URL,MODELS.quick.url,MODELS.best.url];
 export const displayMB=bytes=>(bytes/1024/1024).toFixed(1)+' MB';
+
+// Optional advanced separation: the 181 MB HTDemucs ONNX export is not shipped
+// in the ZIP. Compatibility and model-weight rights must be reviewed before
+// advertising this as a production-grade music-free guarantee.
+export const DEMUCS={
+ name:'Studio · HTDemucs v4',
+ url:'https://huggingface.co/timcsy/demucs-web-onnx/resolve/92e33df/htdemucs_embedded.onnx',
+ size:181000000,
+ sha256:'e5e425c17683f163a472462eb5f5a4ffcd11c31858d57fbd0833b012d8b88077',
+ packageUrl:'https://esm.sh/demucs-web@1.0.2?bundle'
+};

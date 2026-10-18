@@ -1,7 +1,7 @@
 // Fully on-device Silero VAD + UVR MDX-Net vocal-isolation worker.
 // No microphone, server endpoint, API token, or media upload is used.
 // Workers have their own module realm: the document import map does not apply here.
-const RELEASE=new URL(import.meta.url).searchParams.get('v')||'1.5.1';
+const RELEASE=new URL(import.meta.url).searchParams.get('v')||'1.6';
 // Register before ANY asynchronous imports. A module worker can otherwise
 // lose the first process message while its top-level await is evaluating.
 self.onmessage=({data})=>{
@@ -19,13 +19,13 @@ self.postMessage?.({type:'ready',version:RELEASE});
 
 const AUDIO_CACHE='halalframe-audio-models-v1.5'; // retain user's existing offline downloads
 let ort=null, vadSession=null, stemSession=null,stemKey=null,stemDelegate=null;
-let MODELS,ORT_BASE,VAD_URL,resample,stftChunk,istftChunk,blendChunks,deriveGate,HOP,FRAMES,suppressSteadyTones;
+let MODELS,DEMUCS,ORT_BASE,VAD_URL,resample,stftChunk,istftChunk,blendChunks,deriveGate,HOP,FRAMES,suppressSteadyTones;
 let depsPromise=null;
 function loadDependencies(){
   return depsPromise??=Promise.all([
     import(`./models.js?v=${RELEASE}`),import(`./dsp.js?v=${RELEASE}`)
   ]).then(([models,dsp])=>{
-    ({MODELS,ORT_BASE,VAD_URL}=models);
+    ({MODELS,DEMUCS,ORT_BASE,VAD_URL}=models);
     ({resample,stftChunk,istftChunk,blendChunks,deriveGate,HOP,FRAMES,suppressSteadyTones}=dsp);
   }).catch(error=>{depsPromise=null;throw error;});
 }
@@ -50,7 +50,8 @@ async function fetchPinned(url,bytesExpected,job,label,sha){
   const reader=response.body?.getReader();let data;
   if(reader){const pieces=[];let count=0;
     while(true){const {value,done}=await reader.read();if(done)break;pieces.push(value);count+=value.byteLength;
-      pct('models',Math.min(.99,count/Math.max(1,bytesExpected||2300000)),`Downloading ${label}: ${(count/1048576).toFixed(1)} / ${(bytesExpected/1048576).toFixed(1)} MB`,job);
+      const expected=bytesExpected||(DEMUCS&&url===DEMUCS.url?DEMUCS.size:2300000);
+      pct('models',Math.min(.99,count/Math.max(1,expected)),`Downloading ${label}: ${(count/1048576).toFixed(1)} / ~${(expected/1048576).toFixed(1)} MB`,job);
     }
     data=new Uint8Array(count);let at=0;for(const piece of pieces){data.set(piece,at);at+=piece.length;}
   }else{data=new Uint8Array(await response.arrayBuffer());}
@@ -129,6 +130,25 @@ async function isolateStem(audio,rate,quality,job){
   // Keep all samples in their native 44.1 kHz domain until final resampling.
   return vocals.map(ch=>resample(ch,44100,rate));
 }
+async function isolateDemucs(input,rate,job){
+  if(navigator.deviceMemory&&navigator.deviceMemory<6)throw new Error('Studio Demucs needs substantial memory. Use Best MDX-Net or No audio on this phone.');
+  pct('models',0,'Studio: downloading HTDemucs v4 (~181 MB) once. This can be slow.',job);
+  const weights=await fetchPinned(DEMUCS.url,0,job,DEMUCS.name,DEMUCS.sha256);
+  const ortRuntime=await loadRuntime();
+  let module;
+  try{module=await import(DEMUCS.packageUrl);}catch(error){throw new Error('Demucs browser module unavailable on this host: '+error.message);}
+  if(typeof module.DemucsProcessor!=='function')throw new Error('Pinned Demucs browser module has no DemucsProcessor export');
+  const processor=new module.DemucsProcessor({ort:ortRuntime,onProgress:f=>pct('separate',Math.max(0,Math.min(1,f)),'HTDemucs isolating vocals…',job)});
+  pct('models',1,'Studio model loaded; preparing local inference',job);
+  await processor.loadModel(weights.buffer);
+  const converted=input.map(ch=>resample(ch,rate,44100));if(converted.length<2)converted.push(converted[0]);
+  const separated=await processor.separate(converted[0],converted[1]);
+  const stem=separated?.vocals;
+  if(!stem?.left||!stem?.right)throw new Error('HTDemucs did not produce a usable vocals stem');
+  const left=resample(stem.left,44100,rate),right=resample(stem.right,44100,rate);
+  pct('separate',1,'HTDemucs vocal stem ready for verification',job);
+  return [left,right];
+}
 export function applyGateAndStrict({original,vocals,gate,rate,strength,strict}){
   const result=original.map((ch,c)=>new Float32Array(ch.length));
   const mix=strength==='gentle'?.12:strength==='maximum'?0:0; // Gentle blends a small original portion; Strong/Maximum use vocals only.
@@ -157,7 +177,7 @@ async function processAudio(message){
   const input=message.channels.map(x=>new Float32Array(x));
   if(!input.length||!input[0].length)throw new Error('No audio samples were decoded');
   if(input.length>2)throw new Error('At most stereo audio supported');
-  const max=(quality==='best'&&navigator.deviceMemory&&navigator.deviceMemory<=4)?45:120;if(input[0].length/sampleRate>max)throw new Error(`For phone stability, music cleaning is limited to ${max} seconds per edit. No audio and original audio are unrestricted.`);
+  const max=(quality==='studio'?30:quality==='best'&&navigator.deviceMemory&&navigator.deviceMemory<=4?45:120);if(input[0].length/sampleRate>max)throw new Error(`For phone stability, music cleaning is limited to ${max} seconds per edit. No audio and original audio are unrestricted.`);
   const started=secs();pct('start',0,'Checking for speech locally…',job);
   const scores=await voiceActivity(input,sampleRate,job);
   const gate=deriveGate(scores,sampleRate,input[0].length,{strength});
@@ -168,7 +188,7 @@ async function processAudio(message){
     result=input.map(x=>new Float32Array(x.length));
     pct('separate',1,'No speech detected — muted all audio',job);
   }else{
-    const vocals=await isolateStem(input,sampleRate,quality,job);
+    const vocals=quality==='studio'?await isolateDemucs(input,sampleRate,job):await isolateStem(input,sampleRate,quality,job);
     result=applyGateAndStrict({original:input,vocals,gate,rate:sampleRate,strength,strict});
     if(strength==='maximum'){
       pct('refine',0,'Maximum: identifying persistent musical tones…',job);
@@ -179,6 +199,29 @@ async function processAudio(message){
         'Maximum: no reliable music-only tonal reference; voice isolation retained',job);
     }
   }
+  // Second independent classifier: never infer success merely because the
+  // separator completed. Music/music-instrument labels are probabilities,
+  // and an unavailable classifier is explicitly UNVERIFIED.
+  let musicCheck={verified:false,remainingRisk:null,blocks:[],error:'Music classifier not run'};
+  try{
+    pct('music-check',0,'Music check: listening for remaining instruments…',job);
+    const {verifyMusic,smoothRiskGate}=await import(`./music-check.js?v=${RELEASE}`);
+    musicCheck=await verifyMusic({original:input,cleaned:result,rate:sampleRate,strict,
+      onProgress:p=>pct('music-check',p,'Comparing original and processed music scores…',job)});
+    if(musicCheck.remainingRisk>0){
+      const silence=musicCheck.blocks.filter(b=>b.state==='risk'&&(strict||b.speech<.34));
+      if(silence.length){
+        result=smoothRiskGate(result,sampleRate,silence);
+        musicCheck=await verifyMusic({original:input,cleaned:result,rate:sampleRate,strict,
+          onProgress:p=>pct('music-check',p,'Rechecking the safety-muted segments…',job)});
+        musicCheck.extraMuted=silence.length;
+      }
+    }
+    pct('music-check',1,musicCheck.verified?'Music check found no high-confidence instrument segments':'Music still possible — review red timeline sections before sharing',job);
+  }catch(error){
+    musicCheck={verified:false,remainingRisk:null,blocks:[],error:'YAMNet check unavailable: '+error.message};
+    pct('music-check',1,musicCheck.error+' · use No audio for highest certainty',job);
+  }
   const transfer=result.map(x=>x.buffer);
-  postMessage({type:'complete',job,channels:transfer,sampleRate,speechPercent:Math.round(100*speechEnergy),elapsed:secs()-started},transfer);
+  postMessage({type:'complete',job,channels:transfer,sampleRate,speechPercent:Math.round(100*speechEnergy),elapsed:secs()-started,musicCheck,model:quality},transfer);
 }

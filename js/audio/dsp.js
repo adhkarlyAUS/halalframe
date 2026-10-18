@@ -110,10 +110,10 @@ export function blendChunks(chunks,length){
 }
 export function deriveGate(scores,rate,length,{strength='strong',fadesMs=12}={}){
   const start=rate/16000*512,flags=new Uint8Array(scores.length);
-  const threshold=strength==='gentle'?.40:strength==='maximum'?.67:.52;
+  const threshold=strength==='gentle'?.38:strength==='maximum'?.48:.44;
   for(let i=0;i<scores.length;i++)flags[i]=scores[i]>=threshold?1:0;
-  // Fill short holes; retain ~120ms around speech to avoid chopping consonants.
-  const spread=4,ext=new Uint8Array(flags.length);
+  // Protect the beginning and end of words with >=224ms VAD hangover.
+  const spread=7,ext=new Uint8Array(flags.length);
   for(let i=0;i<flags.length;i++)if(flags[i])for(let j=Math.max(0,i-spread);j<=Math.min(flags.length-1,i+spread);j++)ext[j]=1;
   const output=new Float32Array(length),fade=Math.max(1,Math.round(fadesMs/1000*rate));
   for(let i=0;i<length;i++){
