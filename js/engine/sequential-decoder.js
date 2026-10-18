@@ -32,14 +32,15 @@ export async function* sequentialVideoFrames(file,{signal,onProgress=()=>{},maxQ
   const produce=async()=>{
     try{
       const chunkBytes=1024*1024;
-      let offset=0,guard=0;const maxLoops=Math.ceil(file.size/chunkBytes)*4+16;
+      let offset=0,guard=0;
+      const maxLoops=Math.ceil(file.size/chunkBytes)*4+16;
       while(offset<file.size&&!disposed&&guard++<maxLoops){
         cancelled(signal);if(failed)throw failed;
         // Backpressure: avoid buffering an entire 3-minute video as samples.
         while((samples.length>96||frames.length>=maxQueue)&&!failed&&!disposed){cancelled(signal);await nextTick();}
         const chunk=await file.slice(offset,offset+chunkBytes).arrayBuffer();chunk.fileStart=offset;
-        const next=mp4.appendBuffer(chunk);onProgress(Math.min(1,(offset+chunk.byteLength)/file.size));
-        // MP4Box returns the next byte it needs (moov-at-end files jump to the end, then back to mdat).
+        const next=mp4.appendBuffer(chunk);
+        onProgress(Math.min(1,(offset+chunk.byteLength)/file.size));
         offset=(typeof next==='number'&&Number.isFinite(next)&&next!==offset)?next:offset+chunk.byteLength;
         await nextTick();
       }
