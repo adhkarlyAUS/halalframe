@@ -9,6 +9,7 @@ import {Timeline} from './ui/timeline.js';
 import {activeAt} from './state.js';
 import {initFirstRun,initExportReview} from './ui/first-run.js';
 import {takeSharedFile} from './ui/share-target.js';
+import {AudioPanel} from './ui/audio-panel.js';
 const $=id=>document.getElementById(id);
 let project=null,media=null,kind='video',sourceURL=null,selectedId=null,tool='select',draft=null;
 let busyController=null,reviewResolve=null,fixResolve=null,aiBoxes=[],trackingActive=false,scanResults=[];
@@ -18,6 +19,7 @@ let temporaryReveal=false;let seekPending=null,seekRunning=false;let frameTimes=
 let hiddenVideo=$('source-video'),canvas=$('preview'),ctx=canvas.getContext('2d',{alpha:false});
 const history=new History();
 const ai=new PersonAI({onStatus:s=>{$('ai-status').textContent=s;}});
+const audioPanel=new AudioPanel({getFile:()=>sourceFile,getVideo:()=>hiddenVideo,getTime:()=>currentTime(),toast,onChange:()=>{if(project){exportResult=null;$('export-result').classList.add('hidden');refreshEstimate();}}});
 function toast(msg){const el=$('toast');el.textContent=msg;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),3600);}
 function currentTime(){return kind==='photo'?0:(hiddenVideo.currentTime||0);}
 function selected(){return project?.concealments.find(x=>x.id===selectedId)||null;}
@@ -78,14 +80,24 @@ async function chooseSavedProject(saved){
 }
 async function clearProject(){
   if(!project||busyController)return;
-  if(!confirm('Clear every concealment and the saved draft for this video? This cannot be undone.'))return;
-  clearTimeout(saveTimer);history.reset(createProject(project.video));project=createProject(project.video);
-  selectedId=null;scanResults=[];aiBoxes=[];maskCache.clear();exportResult=null;
+  $('clear-changes-modal').classList.remove('hidden');
+}
+async function confirmClearProject(){
+  $('clear-changes-modal').classList.add('hidden');if(!project||busyController)return;
+  clearTimeout(saveTimer);
+  const before=clone(project);
+  project=createProject(project.video);
+  // Exactly one-step undo: restore the complete pre-clear editing session.
+  history.reset(before);history.record(project);
+  selectedId=null;scanResults=[];aiBoxes=[];maskCache.clear();ai.resetCache();exportResult=null;
   $('export-result').classList.add('hidden');
-  try{await clearSavedProject();toast('Project cleared. All saved regions removed.');}
-  catch(e){toast('Could not clear saved draft: '+e.message);}
+  try{await clearSavedProject();toast('All concealments removed. Press Undo to restore the previous edits.');}
+  catch(e){toast('Could not clear the saved project: '+e.message);}
   refresh();
 }
+$('clear-changes-cancel').onclick=()=>$('clear-changes-modal').classList.add('hidden');
+$('clear-changes-yes').onclick=confirmClearProject;
+
 function scheduleSave(){clearTimeout(saveTimer);saveTimer=setTimeout(()=>saveProject(project).catch(()=>{}),500);}
 function updateDirect(fn,{save=false,refreshUI=true}={}){if(!project)return;fn();if(save)snapshot();else if(refreshUI)refresh();else render();}
 function selectMask(id){selectedId=id;refresh();}
@@ -122,7 +134,7 @@ async function openFile(file){
       if(!Number.isFinite(info.duration)||info.duration<=0)throw new Error('The video duration is not available. Try an MP4 file.');
       if(info.duration>180)toast('Videos over 3 minutes may be slow or use substantial memory.');
     }
-    project=createProject(info);sourceFile=file;exportResult=null;$('export-result').classList.add('hidden');
+    project=createProject(info);sourceFile=file;exportResult=null;$('export-result').classList.add('hidden');audioPanel.reset(kind==='video');
     const saved=await loadSavedProject().catch(()=>null);
     const old=saved?.project?.video;
     const isSameVideo=old?.fileName===file.name&&old?.fileSize===file.size&&old?.width===info.width&&old?.height===info.height&&
@@ -337,13 +349,24 @@ $('png-export').onclick=()=>{if(kind==='photo')requestExportReview(()=>performPh
 $('about-open').onclick=()=>showInfo('about');$('ruling-open').onclick=()=>showInfo('ruling');$('help-btn').onclick=()=>showInfo('help');$('info-close').onclick=()=>$('info-modal').classList.add('hidden');
 $('social-media-help').onclick=()=>showInfo('social');$('footer-social-help').onclick=()=>showInfo('social');
 $('footer-disclaimer').onclick=()=>firstRun.showDisclaimer();
+let installEvent=null;
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installEvent=e;});
+window.addEventListener('appinstalled',()=>{installEvent=null;toast('HalalFrame installed.');});
+async function installApp(){
+  if(window.matchMedia('(display-mode:standalone)').matches){toast('HalalFrame is already installed.');return;}
+  if(installEvent){const prompt=installEvent;installEvent=null;await prompt.prompt();return;}
+  if(/iphone|ipad|ipod/i.test(navigator.userAgent))toast('On iPhone: tap Share in Safari → Add to Home Screen.');
+  else toast('In Chrome: open the ⋮ menu → Install app / Add to Home screen.');
+}
+$('install-app').onclick=installApp;
 $('info-content').addEventListener('click',e=>{
   if(e.target.closest('#info-disclaimer-link')){$('info-modal').classList.add('hidden');firstRun.showDisclaimer();}
   if(e.target.closest('#info-social-link'))showInfo('social');
+  if(e.target.closest('#info-install-link')){ $('info-modal').classList.add('hidden'); void installApp(); }
 });
 function showInfo(type){const title={about:'About HalalFrame',ruling:'The Amanah of Sharing',help:'How HalalFrame works',social:'Getting videos from social media'}[type];$('info-title').textContent=title;
   const content={
-    about:`<h3>Developed by FD Abu Ishaq and Muzzy</h3><p>We are software developers creating practical, beneficial software to serve the Muslim Ummah, in shaa Allah. HalalFrame is built to help people conceal visual content before sharing it, with privacy, simplicity, and accessibility at its heart.</p><h3>Special thanks</h3><p>Special thanks to my friend Mustapha (Muzzy) for inspiring this idea. I ask Allah that the reward for this goes to him and to all the muwahhideen who are trying to uphold the seriousness of forbidding munkar and encouraging goodness.</p><p>All media editing takes place in the browser. No sign-in, app server or uploaded media. AI model files download from the model provider on first use.</p><h3>Discover Adhkarly</h3><p>Daily adhkar, Qur'an and Islamic learning. Our download links will be added later.</p><p><button id="info-disclaimer-link" class="text-btn">View disclaimer again ↗</button> · <button id="info-social-link" class="text-btn">Getting social media videos ↗</button></p>`,
+    about:`<h3>Developed by FD Abu Ishaq and Muzzy</h3><p>We are software developers creating practical, beneficial software to serve the Muslim Ummah, in shaa Allah. HalalFrame is built to help people conceal visual content before sharing it, with privacy, simplicity, and accessibility at its heart.</p><h3>Special thanks</h3><p>Special thanks to my friend Mustapha (Muzzy) for inspiring this idea. I ask Allah that the reward for this goes to him and to all the muwahhideen who are trying to uphold the seriousness of forbidding munkar and encouraging goodness.</p><p>All media editing takes place in the browser. No sign-in, app server or uploaded media. AI model files download from the model provider on first use.</p><h3>Discover Adhkarly</h3><p>Daily adhkar, Qur'an and Islamic learning. Our download links will be added later.</p><p><button id="info-install-link" class="text-btn">Install HalalFrame ↗</button> · <button id="info-disclaimer-link" class="text-btn">View disclaimer again ↗</button> · <button id="info-social-link" class="text-btn">Getting social media videos ↗</button></p>`,
     ruling:`<p><strong>Before you share, remember Allah.</strong> A photo or video can be forwarded and viewed far beyond the original audience. We should avoid knowingly encouraging or spreading sin.</p><blockquote>“Whoever calls to misguidance will have a burden of sin like that of those who follow him, without that detracting from their sins in the slightest.” <strong>— Sahih Muslim 2674</strong></blockquote><p>Allah warns about those who love immorality to spread among the believers (Surah An-Nur 24:19). Not every accidental appearance necessarily makes someone responsible for every later viewer's actions; intention, knowledge and what is being promoted matter.</p><p><strong>AI can make mistakes.</strong> Check your complete edited media before sharing. This app does not guarantee that all exposed awrah has been found.</p>`,
     social:`<p><strong>HalalFrame does not download videos from YouTube, Facebook, Instagram or TikTok links.</strong></p><p>When a creator and the platform permit saving a video, use that app's own Save or Download option, or use footage you recorded yourself. Then open the saved media in HalalFrame using <strong>Choose a file</strong>.</p><p>On Android, install HalalFrame as an app. From Gallery or Files, tap <strong>Share → HalalFrame</strong> to send a video or image file directly into the editor. Some apps share only a webpage link instead of the media file, which cannot be imported automatically.</p><p>Respect the creator's permissions and applicable platform terms. No external downloader links are used.</p>`,
     help:`<p><strong>1.</strong> Open a local video or photo. <strong>2.</strong> Pause at the moment you want. Tap a person to load the AI detector, or choose “Draw new box” and drag on the video. <strong>3.</strong> A new region starts at that moment and lasts three seconds by default. Move the scrubber to a later moment, select “Add keyframe” and draw its new position. <strong>4.</strong> Tap Track → or ← to let AI follow it, stopping to ask you when uncertain. <strong>5.</strong> Review the full timeline before sharing.</p><p>Photo JPG/PNG export is included. Video MP4/audio output uses hardware WebCodecs when available and single-thread FFmpeg or WebM fallback, depending on browser support; check the result before sharing.</p>`
@@ -357,20 +380,22 @@ function refreshEstimate(){
 $('export-preset').onchange=refreshEstimate;
 async function performVideoExport(){
   if(kind!=='video'||!project||!sourceFile||busyController)return;
+  let audioOptions;
+  try{audioOptions=audioPanel.exportOptions();}catch(error){toast(error.message);audioPanel.tab('audio');return;}
   const controller=beginBusy('Exporting MP4','Rendering every frame on this device. Keep the app open.');
   const previousTime=currentTime();hiddenVideo.pause();$('export-result').classList.add('hidden');
   try{
-    const result=await exportVideo({file:sourceFile,project,maskCache,ai,preset:$('export-preset').value,signal:controller.signal,onProgress:(p,message)=>progress(p,message),onStatus:message=>$('busy-copy').textContent=message});
+    const result=await exportVideo({file:sourceFile,project,maskCache,ai,preset:$('export-preset').value,...audioOptions,signal:controller.signal,onProgress:(p,message)=>progress(p,message),onStatus:message=>$('busy-copy').textContent=message});
     if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
     exportResult={...result,name:`${project.video.fileName.replace(/\.[^.]+$/,'')}-halalframe.${result.format}`};
     $('export-result').classList.remove('hidden');
     $('export-result-title').textContent=`${result.format.toUpperCase()} ready · ${(result.blob.size/1024/1024).toFixed(1)} MB`;
-    $('export-result-message').textContent=result.warning||`Edited video ready${result.audio?' with original sound':''}. Review playback before sharing.`;
+    $('export-result-message').textContent=result.warning||`Edited video ready (${audioOptions.audioMode==='none'?'silent':audioOptions.audioMode==='clean'?'cleaned voice':'original soundtrack'}). Review playback before sharing.`;
     toast('Export finished. Test playback and sound before sharing.');
   }catch(e){if(e.name==='AbortError')toast('Export cancelled.');else{console.error(e);toast('Export failed: '+e.message);}}
   finally{endBusy();await seekTo(previousTime);}
 }
-$('mp4-export').onclick=()=>{if(kind==='video'&&project&&sourceFile&&!busyController)requestExportReview(performVideoExport);};
+$('mp4-export').onclick=()=>{if(kind==='video'&&project&&sourceFile&&!busyController){try{audioPanel.exportOptions();requestExportReview(performVideoExport);}catch(e){toast(e.message);audioPanel.tab('audio');}}};
 $('download-video').onclick=()=>{if(exportResult)downloadBlob(exportResult.blob,exportResult.name);};
 $('share-video').onclick=async()=>{
   if(!exportResult)return;

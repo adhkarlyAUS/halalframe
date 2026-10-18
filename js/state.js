@@ -3,7 +3,7 @@ export const clone = v => structuredClone(v);
 export const makeId = () => globalThis.crypto?.randomUUID?.() || `hf-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 export const seconds = (s) => { const n = Math.max(0,s||0); return `${Math.floor(n/60).toString().padStart(2,'0')}:${(n%60).toFixed(2).padStart(5,'0')}`; };
 export function createProject(video) {
-  return { version: '1.4', video: { duration: Number(video.duration)||0, fps: Number(video.fps)||30, width: video.width, height: video.height, fileName: video.fileName||'', fileSize: video.fileSize||0, fileLastModified: video.fileLastModified||0 }, concealments: [] };
+  return { version: '1.5', video: { duration: Number(video.duration)||0, fps: Number(video.fps)||30, width: video.width, height: video.height, fileName: video.fileName||'', fileSize: video.fileSize||0, fileLastModified: video.fileLastModified||0 }, concealments: [] };
 }
 export function normalizedBox(b) {
   const x=clamp(b.x,0,1), y=clamp(b.y,0,1);
@@ -12,7 +12,7 @@ export function normalizedBox(b) {
 export function newConcealment(project, box, t, { label, source='manual' } = {}) {
   const startTime=clamp(t,0,project.video.duration), endTime=Math.min(project.video.duration,startTime+3);
   return { id:makeId(), label:label||`Region ${project.concealments.length+1}`,
-    startTime, endTime, shape:'box', effect:'pixelate', strength:42, padding:0.15, feather:0, safetyMargin:8, includeFace:false,
+    startTime, endTime, shape:'outline', effect:'pixelate', strength:42, padding:0.15, feather:0, safetyMargin:8, includeFace:false,
     track:[{t:startTime,...normalizedBox(box),confidence:1,source}] };
 }
 // Previously saved v1.3 black/brand regions are converted without changing
@@ -23,7 +23,7 @@ export function migrateProjectEffects(project) {
   for (const c of project.concealments || []) {
     if (c.effect !== 'pixelate' && c.effect !== 'blur') { c.effect='pixelate'; c.strength=Math.max(42,Number(c.strength)||0); changed=true; }
   }
-  if (project.version !== '1.4') { project.version='1.4'; changed=true; }
+  if (project.version !== '1.5') { project.version='1.5'; changed=true; }
   return {changed,project};
 }
 export function addPoint(c, t, box, source='manual', confidence=1) {
