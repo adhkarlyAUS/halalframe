@@ -90,6 +90,35 @@ async function loadFFmpeg(){
   finally{URL.revokeObjectURL(coreURL);URL.revokeObjectURL(wasmURL);}
   return {ffmpeg,fetchFile};
 }
+// Lossless PCM bridge for browser configurations without AAC AudioEncoder.
+// The source file is deliberately NOT used when Cleaned Audio is selected.
+export function audioBufferToWAV(buffer){
+  const channels=Math.min(2,buffer.numberOfChannels),rate=buffer.sampleRate,length=buffer.length;
+  const out=new ArrayBuffer(44+length*channels*2),view=new DataView(out);
+  const put=(offset,str)=>{for(let i=0;i<str.length;i++)view.setUint8(offset+i,str.charCodeAt(i));};
+  put(0,'RIFF');view.setUint32(4,36+length*channels*2,true);put(8,'WAVE');put(12,'fmt ');
+  view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,channels,true);
+  view.setUint32(24,rate,true);view.setUint32(28,rate*channels*2,true);view.setUint16(32,channels*2,true);
+  view.setUint16(34,16,true);put(36,'data');view.setUint32(40,length*channels*2,true);
+  let at=44;const data=Array.from({length:channels},(_,c)=>buffer.getChannelData(c));
+  for(let i=0;i<length;i++)for(let c=0;c<channels;c++){
+    const n=Math.max(-1,Math.min(1,data[c][i]));view.setInt16(at,n<0?Math.round(n*32768):Math.round(n*32767),true);at+=2;
+  }
+  return new Blob([out],{type:'audio/wav'});
+}
+export async function muxCleanAudio(videoBlob,cleanedAudio,{signal,onStatus=()=>{}}={}){
+  if(!cleanedAudio)throw new Error('No cleaned audio buffer supplied');
+  abortIf(signal);onStatus('Encoding locally cleaned voice with FFmpeg…');
+  const {ffmpeg,fetchFile}=await loadFFmpeg(),abort=()=>ffmpeg.terminate();
+  signal?.addEventListener('abort',abort,{once:true});
+  try{
+    await ffmpeg.writeFile('video.mp4',await fetchFile(videoBlob));
+    await ffmpeg.writeFile('cleaned.wav',await fetchFile(audioBufferToWAV(cleanedAudio)));
+    const code=await ffmpeg.exec(['-y','-i','video.mp4','-i','cleaned.wav','-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','128k','-movflags','+faststart','-shortest','clean.mp4']);
+    if(code!==0)throw new Error('AAC cleaned-audio muxing failed');
+    return new Blob([await ffmpeg.readFile('clean.mp4')],{type:'video/mp4'});
+  }finally{signal?.removeEventListener('abort',abort);ffmpeg.terminate();}
+}
 export async function muxOriginalAudio(videoBlob,original,{signal,onStatus=()=>{}}={}){
   abortIf(signal);onStatus('Loading offline audio muxer (first use downloads ~32 MB)…');
   const {ffmpeg,fetchFile}=await loadFFmpeg();
@@ -108,20 +137,22 @@ export async function muxOriginalAudio(videoBlob,original,{signal,onStatus=()=>{
     return new Blob([result],{type:'video/mp4'});
   }finally{signal?.removeEventListener('abort',onAbort);ffmpeg.terminate();}
 }
-export async function exportVideo({file,project,maskCache,ai,preset='720',signal,onProgress=()=>{},onStatus=()=>{}}){
+export async function exportVideo({file,project,maskCache,ai,preset='720',audioMode='original',cleanedAudio=null,signal,onProgress=()=>{},onStatus=()=>{}}){
+  if(!['original','none','clean'].includes(audioMode))throw new Error('Unrecognised audio mode');
+  if(audioMode==='clean'&&!cleanedAudio)throw new Error('Process cleaned audio before exporting.');
   abortIf(signal);
   if(typeof VideoEncoder==='undefined'||typeof VideoFrame==='undefined'){
-    return await fallbackVideo({file,project,maskCache,ai,preset,signal,onProgress,onStatus});
+    return await fallbackVideo({file,project,maskCache,ai,preset,audioMode,cleanedAudio,signal,onProgress,onStatus});
   }
   let muxerLibrary;
-  try{muxerLibrary=await import(MP4_MUXER_URL);}catch(e){onStatus('MP4 library unavailable; trying browser recorder.');return fallbackVideo({file,project,maskCache,ai,preset,signal,onProgress,onStatus});}
+  try{muxerLibrary=await import(MP4_MUXER_URL);}catch(e){onStatus('MP4 library unavailable; trying browser recorder.');return fallbackVideo({file,project,maskCache,ai,preset,audioMode,cleanedAudio,signal,onProgress,onStatus});}
   const {width,height,bitRate}=estimateSize(project.video,preset),fps=preset==='original'?Math.min(60,project.video.fps||30):Math.min(30,project.video.fps||30);
   const candidates=['avc1.4d002a','avc1.42001f'];
   let cfg=null;
   for(const codec of candidates){const test={codec,width,height,bitrate:bitRate,framerate:fps,hardwareAcceleration:'prefer-hardware'};
     if((await VideoEncoder.isConfigSupported(test).catch(()=>({supported:false}))).supported){cfg=test;break;}}
-  if(!cfg){onStatus('H.264 WebCodecs unsupported; using recorder fallback.');return fallbackVideo({file,project,maskCache,ai,preset,signal,onProgress,onStatus});}
-  const inputAudio=await decodeAudioBuffer(file).catch(()=>null);
+  if(!cfg){onStatus('H.264 WebCodecs unsupported; using recorder fallback.');return fallbackVideo({file,project,maskCache,ai,preset,audioMode,cleanedAudio,signal,onProgress,onStatus});}
+  const inputAudio=audioMode==='none'?null:audioMode==='clean'?cleanedAudio:await decodeAudioBuffer(file).catch(()=>null);
   const audioConfig={codec:'mp4a.40.2',sampleRate:48000,numberOfChannels:Math.min(2,inputAudio?.numberOfChannels||2),bitrate:128000};
   const audioSupported=typeof AudioEncoder!=='undefined'&&(await AudioEncoder.isConfigSupported(audioConfig).catch(()=>({supported:false}))).supported;
   const audioPossible=!!inputAudio&&audioSupported;
@@ -166,13 +197,17 @@ export async function exportVideo({file,project,maskCache,ai,preset='720',signal
     }
     muxer.finalize();
     let blob=new Blob([target.buffer],{type:'video/mp4'});
-    if(!soundOK){
-      onStatus('Trying original-audio stream mux (or confirming a silent source)…');
+    if(audioMode==='original'&&!soundOK){
+      onStatus('Trying original-audio stream mux…');
       try{blob=await muxOriginalAudio(blob,file,{signal,onStatus});soundOK=true;}
       catch(e){reason='Original audio could not be verified or muxed: '+e.message;}
+    }else if(audioMode==='clean'&&!soundOK){
+      // Never substitute original music for a requested cleaned soundtrack.
+      blob=await muxCleanAudio(blob,cleanedAudio,{signal,onStatus});soundOK=true;
     }
+
     onProgress(1,'Export complete');
-    return {blob,format:'mp4',audio:inputAudio?soundOK:false,warning:!soundOK?reason||'No verified audio track in source or export':null};
+    return {blob,format:'mp4',audio:audioMode==='none'?false:(inputAudio?soundOK:false),warning:audioMode==='none'?null:!soundOK?reason||'No verified audio track in source or export':audioMode==='clean'?'AI voice separation may leave music; listen to the exported result.':null};
   }finally{
     try{encoder?.close();}catch{}
     handle?.close();try{await lock?.release();}catch{}
@@ -180,7 +215,7 @@ export async function exportVideo({file,project,maskCache,ai,preset='720',signal
 }
 // Browser fallback: records canvas frames in realtime. Prefer MP4 remux through ffmpeg.wasm;
 // if it fails, a WebM is offered only with a clearly identified format/sound warning.
-async function fallbackVideo({file,project,maskCache,ai,preset,signal,onProgress,onStatus}){
+async function fallbackVideo({file,project,maskCache,ai,preset,audioMode='original',cleanedAudio=null,signal,onProgress,onStatus}){
   if(typeof MediaRecorder==='undefined'||!HTMLCanvasElement.prototype.captureStream)throw new Error('Neither WebCodecs nor MediaRecorder is supported by this browser');
   const {width,height}=outputDimensions(project.video.width,project.video.height,preset),fps=Math.min(30,project.video.fps||30);
   const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
@@ -207,19 +242,25 @@ async function fallbackVideo({file,project,maskCache,ai,preset,signal,onProgress
     const webm=new Blob(chunks,{type:'video/webm'});
     onStatus('Converting WebM to MP4 and restoring original audio…');
     try{
-      const mp4=await convertRecordedWebM(webm,file,{signal,onStatus});
-      onProgress(1,'Export complete');return {blob:mp4,format:'mp4',audio:true};
-    }catch(e){onStatus('MP4 conversion failed: '+e.message+'. WebM video available without guaranteed original audio.');onProgress(1,'WebM fallback ready');return {blob:webm,format:'webm',audio:false,warning:'MP4/audio conversion unavailable. This WebM has no original sound; do not treat it as WhatsApp-compatible MP4.'};}
+      const mp4=await convertRecordedWebM(webm,file,{signal,onStatus,audioMode,cleanedAudio});
+      onProgress(1,'Export complete');return {blob:mp4,format:'mp4',audio:audioMode!=='none'};
+    }catch(e){if(audioMode==='clean')throw new Error('Cleaned-audio MP4 conversion failed: '+e.message+'. We will NOT substitute the original soundtrack. Try No audio.');onStatus('MP4 conversion failed: '+e.message+'. WebM video available without guaranteed original audio.');onProgress(1,'WebM fallback ready');return {blob:webm,format:'webm',audio:false,warning:'MP4/audio conversion unavailable. This WebM has no original sound; do not treat it as WhatsApp-compatible MP4.'};}
   }finally{
     if(recorder.state!=='inactive')recorder.stop();
     for(const track of stream.getTracks())track.stop();handle.close();
   }
 }
-async function convertRecordedWebM(webm,file,{signal,onStatus}){
+async function convertRecordedWebM(webm,file,{signal,onStatus,audioMode,cleanedAudio}){
   const {ffmpeg,fetchFile}=await loadFFmpeg();const onAbort=()=>ffmpeg.terminate();signal?.addEventListener('abort',onAbort,{once:true});
   try{
-    await ffmpeg.writeFile('mask.webm',await fetchFile(webm));await ffmpeg.writeFile('src',await fetchFile(file));
-    const rc=await ffmpeg.exec(['-y','-i','mask.webm','-i','src','-map','0:v:0','-map','1:a:0?','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-movflags','+faststart','-shortest','result.mp4']);
+    await ffmpeg.writeFile('mask.webm',await fetchFile(webm));
+    if(audioMode==='original')await ffmpeg.writeFile('src',await fetchFile(file));
+    else if(audioMode==='clean')await ffmpeg.writeFile('clean.wav',await fetchFile(audioBufferToWAV(cleanedAudio)));
+    const inputName=audioMode==='clean'?'clean.wav':'src';
+    const command=audioMode==='none'?
+      ['-y','-i','mask.webm','-map','0:v:0','-an','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart','result.mp4']:
+      ['-y','-i','mask.webm','-i',inputName,'-map','0:v:0','-map','1:a:0','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-movflags','+faststart','-shortest','result.mp4'];
+    const rc=await ffmpeg.exec(command);
     if(rc!==0)throw new Error('Offline conversion codec unavailable');
     return new Blob([await ffmpeg.readFile('result.mp4')],{type:'video/mp4'});
   }finally{signal?.removeEventListener('abort',onAbort);ffmpeg.terminate();}
