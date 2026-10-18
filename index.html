@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#17191b"><meta name="description" content="HalalFrame by Adhkarly — private, on-device video concealment editor.">
-<title>HalalFrame v1.7 — An Adhkarly Product</title>
+<title>HalalFrame v1.8 — An Adhkarly Product</title>
 <style>.splash-screen{position:fixed;inset:0;z-index:220;background:#111416;color:#f6f7f3;display:flex;align-items:center;justify-content:center}.splash-content{width:min(600px,90%);text-align:center}.splash-logo{width:min(100%,480px)}.splash-screen.hidden{display:none!important}</style>
-<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=1.7">
-<link rel="icon" href="assets/favicon-32.png?v=1.7" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=1.8">
+<link rel="icon" href="assets/favicon-32.png?v=1.8" type="image/png" sizes="32x32">
 <script>
 // The ONE release constant: CSS, manifest, entry module, transitive imports and
 // service-worker registration all derive their cache-busting URLs from here.
-const APP_VERSION='1.7';window.APP_VERSION=APP_VERSION;
+const APP_VERSION='1.8';window.APP_VERSION=APP_VERSION;
 (function bootstrapVersionedAssets(){
   const paths=['js/main.js','js/state.js','js/engine/ai.js','js/engine/render.js',
     'js/engine/segmentation.js','js/engine/export.js','js/engine/ffmpeg-worker.js',
@@ -126,8 +126,8 @@ const APP_VERSION='1.7';window.APP_VERSION=APP_VERSION;
             <div id="audio-backend" class="dim tiny">WebGPU preferred · WASM fallback</div>
             <div id="music-report" class="music-report hidden" aria-live="polite"><strong>Music check · original vs processed</strong><p id="music-report-description">Independent verification pending.</p>
               <div class="music-report-strip" id="music-report-strip"></div>
-              <div class="music-report-key"><span><i class="speech"></i> Speech / low risk</span><span><i class="removed"></i> Music removed</span><span><i class="risk"></i> Possible music</span></div>
-              <p class="hint">YAMNet scores are estimates, not a guarantee. If red remains, choose No audio or review and mute those portions.</p></div>
+              <div class="music-report-key"><span><i class="speech"></i> Speech / low risk</span><span><i class="removed"></i> Music removed</span><span><i class="risk"></i> Likely music</span><span><i class="caution"></i> Possible instruments · review</span></div>
+              <p class="hint">YAMNet scores are estimates, not a guarantee. If red or amber remains, listen and review carefully; choose No audio if unsure.</p></div>
             <div class="audio-preview-control"><strong>A / B preview · 5 seconds from the playhead</strong><div class="audio-buttons"><button id="audio-preview-original" class="btn subtle small" type="button">▶ Original</button><button id="audio-preview-clean" class="btn secondary small" type="button" disabled>▶ Cleaned</button><button id="audio-preview-stop" class="btn subtle small" type="button" disabled>■ Stop</button></div><div class="hint" id="audio-preview-status">Pause the video, then compare a section.</div></div>
           </div>
         </div>
@@ -149,7 +149,7 @@ const APP_VERSION='1.7';window.APP_VERSION=APP_VERSION;
   </section>
   <section class="discover-card"><div class="discover-label">ALSO FROM OUR DEVELOPERS</div><div class="discover-wordmark"><span>adhkar</span><span class="discover-ly">ly</span></div><p>Daily adhkar, Qur'an, du'as and Islamic learning — built by the Adhkarly team.</p><div class="discover-actions"><button class="btn subtle" disabled title="App link not configured">Android · Coming soon</button><button class="btn subtle" disabled title="App link not configured">iPhone · Coming soon</button><button class="btn subtle" disabled title="App link not configured">Web · Coming soon</button></div></section>
   <section class="about-grid"><article class="info-card"><h3>Private by design</h3><p>Your photo or video remains in your browser tab. No accounts, servers, API keys or uploaded media. AI models must download once before detection works.</p></article><article class="info-card"><h3>Before you share</h3><p>AI can miss a person, a frame or exposed awrah. Review everything manually. Nothing in this app guarantees religious compliance.</p><button id="ruling-open" class="text-btn">Read the reminder ↗</button></article></section>
-  <footer class="footer"><div>HALALFRAME v1.7 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p class="footer-credit">Developed by Adhkarly Team</p><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · <button id="install-app" class="text-btn">Install app</button> · <button id="footer-disclaimer" class="text-btn">View disclaimer again</button> · <button id="footer-social-help" class="text-btn">Social media help</button></p></footer>
+  <footer class="footer"><div>HALALFRAME v1.8 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p class="footer-credit">Developed by Adhkarly Team</p><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · <button id="install-app" class="text-btn">Install app</button> · <button id="footer-disclaimer" class="text-btn">View disclaimer again</button> · <button id="footer-social-help" class="text-btn">Social media help</button></p></footer>
 </main>
 <div id="update-banner" class="update-banner hidden" role="status" aria-live="polite">
   <span>Update ready — tap to reload</span><button type="button" id="update-reload" class="btn primary small">Reload</button>

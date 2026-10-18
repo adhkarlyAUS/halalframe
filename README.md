@@ -1,74 +1,67 @@
-# HalalFrame v1.7 — Precision, Music Check, and Onboarding Hotfix
+# HalalFrame v1.8 — Full-head concealment & release polish
 
-HalalFrame is a **free**, installable, static browser photo/video concealment editor by Adhkarly Team. It processes user media on the device; no application backend, API key, account, or upload of the user's personal videos is used. On first use it **downloads AI model weights and JavaScript** from pinned CDN/model hosts; browsers/hosts can receive ordinary HTTP request metadata. **Neither awrah concealment nor AI music removal is guaranteed accurate**: review the entire edited video and listen to the exported audio. **No audio** is the only reliable way to remove every sound.
+This is a **targeted update of the live-tested v1.7 codebase**, not a rebuild. HalalFrame is a static, free, on-device photo/video editor. No videos or photos are uploaded to the developer's server. MediaPipe and audio models download from external pinned hosts on first use, and the local PWA caches supported assets.
 
-**IMPORTANT LIMITATION:** This release's new tracking and audio changes were checked with synthetic regressions, source checks and Chromium DOM UI tests. We could **not run MediaPipe PoseLandmarker / YAMNet / Demucs with actual remote model downloads**, nor complete Chrome-hosted MP4/WhatsApp tests in the sandbox. The user's v1.6 report is the real-device baseline; v1.7 behavior must be verified on Android before describing these problems as solved.
+**Safety:** AI cannot prove that every pixel of awrah, a person, or music has been removed. Review **every frame and the actual exported file** before sharing. The audio **No audio** option is safest when no music or audio must remain. HalalFrame provides editing tools, not religious rulings.
 
-## Deploy for free (replace v1.6 in place)
+## Free update of the existing GitHub Pages app
 
-1. Extract `HalalFrame_v1.7_Precision_Fixes.zip`.
-2. Upload **all files inside the extracted directory** into the root of https://github.com/adhkarlyaus/halalframe, replacing matching files; commit to `main`.
-3. GitHub Pages deploys on the existing URL. Open **https://adhkarlyaus.github.io/halalframe/?v=1.7** and apply the **Update ready — reload** action if shown.
-4. Install from Android Chrome's Add to Home screen / Install app menu. MediaPipe and sound-model downloads require an internet connection at least once. The on-device PWA cache remains versioned and network-first for source files.
+1. Extract `HalalFrame_v1.8_Full_Build.zip`.
+2. Upload **the contents of the extracted folder** into the existing GitHub repository root: https://github.com/adhkarlyaus/halalframe. Replace matching files and commit to `main`.
+3. Once GitHub Pages deploys, open https://adhkarlyaus.github.io/halalframe/?v=1.8 on Android Chrome. Reload once if necessary. Your old public deployment is not changed until you upload the files.
+4. On desktop, you may also run `python3 -m http.server 8000` from the extracted folder. Opening `index.html` with `file://` is not sufficient for ES modules, service workers and AI.
 
-Opening `index.html` via `file://` can fail due to ES modules and service worker restrictions. Use the hosted HTTPS page or run `python3 -m http.server 8000` in the folder.
+## Changes from v1.7
 
-## Changes since v1.6
+### Precise full-head concealment
 
-### A. Better selected-person precision and fewer mistaken prompts
+- For outline masks, **preview and export both use `concealmentRect()`**, which includes additional space above the pose detector's highest landmark. Without this, the cap could be cut off even if the mask included hair.
+- `headBoundsFromPose()` uses nose, eyes, ears and shoulder landmarks to form a generous cap over the selected person's entire hair/face/head, extending above the eyes and sideways beyond ears. If landmarks are incomplete, it uses a selected-target-only conservative top cap. The body-mask coverage threshold is checked **before** adding the head cap, so a missing torso still triggers a full selected-box fallback.
+- `unionHeadRegion()` applies that cap to the **selected person's mask**. The selfie multiclass `hair=1` label is also used on every third analysed frame **within the selected head neighbourhood only**, never as an all-person whole-frame mask.
+- Cap, precise instance mask, safety margin and explicit exclusions are combined. v1.7's immediate release of other people when separated is retained, and precision-critical masks still do **not** blend stale previous-frame pixels.
+- **Tradeoff:** The cap is conservative and may conceal a little background near the selected person's head, especially with partial/missing landmarks. Real-model hair coverage remains to be tested on Android. No computer-vision guarantee of zero exposed pixels is possible.
 
-- `js/engine/segmentation.js` freezes a **full-frame snapshot** at the requested time before awaiting the pose AI, so a seek during processing cannot associate someone else's pose mask with the target. For precision-critical concealments it uses a current-frame **individual pose instance**, subtracts competing pose probabilities, restricts the final mask to the current target box, and **never blends the previous frame's mask**. Those were two causes of cameraman coverage persisting after separation.
-- `js/engine/tracker.js` and `js/engine/identity.js` re-rank candidates against the tracked **original appearance**, global association and current detections rather than accepting the drifting predicted box. When a trustworthy target reappears, it returns to the individual's own box rather than the prior large crossing/loss union. The long-loss safety mask remains active until the person is re-acquired or the user ends it. Low-quality partial torso-only boxes are handled conservatively.
-- Existing **Don't cover this person**, manual reviews, Find all people, Pixelate/Blur and the existing 10fps/Best tracking modes remain. Exclusions and override controls remain accessible.
+### Mobile onboarding
 
-**Important tradeoff:** Computer vision can still mistake one person for another at crossings, and a padded safety fallback while tracking is lost can cover an unrelated person. The requirement to never reveal a selected person's awrah and never mask a bystander cannot both be guaranteed automatically in every frame. Review and correct uncertain regions before export.
+- At viewport widths **below 600px**, Step 2 shows all three Tap → Track → Export illustrations **stacked vertically** with each image about **124px wide** and its readable label. No horizontal swipe needed. Desktop layout is unchanged.
+- `tap-person.svg` is redrawn using **one head-and-shoulders silhouette** and a touch **finger/hand with a ripple**, rather than a mouse cursor or extra limbs. Reduced-motion preferences still stop its animation.
 
-### B. Music remover actually checks audio in the browser
+### Update notice
 
-- `js/audio/music-check.js` runs MediaPipe **AudioClassifier/YAMNet on the document/main thread**, NOT in the module audio worker. The worker now only produces separated audio and sends the cleaned PCM; after it terminates, `js/ui/audio-panel.js` runs the before/after music check and generates the green/grey/red **Music check strip**, with explicit **Unverified** state if classification fails. This avoids the v1.6 `importScripts() on module worker` error. The check is a probabilistic risk estimate, not religious certification or an absence-of-music guarantee.
-- `js/audio/music-worker.js` streams a Studio/Demucs model download with **received byte counts / total MB**, 25-second initial-response timeout, 30-second stall timeout, 4-minute total deadline, HTTP/CORS errors and size/checksum checking. Studio failures trigger a **Best MDX-Net** fallback, without returning original audio as "cleaned." The user sees the fallback. Download URL: `https://huggingface.co/timcsy/demucs-web-onnx/resolve/92e33df/htdemucs_embedded.onnx` (pinned revision; expected 180,534,758 bytes; configured SHA in models.js). **The exact CORS behavior of this pinned host from GitHub Pages could not be verified** here; automatic fallback remains important.
-- Quick = MDX-Net 9482 (~30 MB), Best = MDX-Net Voc FT (~67 MB), Studio = experimental HTDemucs v4 (~172 MiB / 181 MB). For **Maximum** only, an additional reference-based spectral suppression pass targets residual drums/bass/chords. This may degrade vocals and **does not make sound guaranteed music-free**. Original and No audio options are unchanged. Voice detection keeps the v1.6 224ms padding.
-- Models and related rights: `onnxruntime-web@1.22.0` (MIT), `@mediapipe/tasks-audio@0.10.22-rc.20250304` (Apache-2.0 package), `demucs-web@1.0.2` (MIT library), Silero VAD (MIT), pinned MDX models and HTDemucs weights (separate model terms; **verify commercial rights before using in an ad-supported app**). The Demucs WASM/WebGPU path may fail on phones or shared hosts.
+- The **Update ready** banner is shown only when a **newer service worker really is waiting**. It is hidden on startup, controller takeover and reload; an already running latest release does not display a stale notification. The existing network-first shell and cache-first model assets continue unchanged. `APP_VERSION` is **1.8**; all module/stylesheet URLs inherit its cache-busting suffix.
 
-### C. Design
+### Stricter music check
 
-- Splash: at least **1,850 milliseconds**, bigger vertically/horizontally centered transparent HalalFrame wordmark, animated lime focus-frame corners, soft glow, App → AI models → Ready status and reduced-motion support.
-- Onboarding page 1 vertically centred; page 2 custom illustrated Tap → Track → Export cards approximately **338×220** on a 390px phone, swipeable with subtle animations; page 3 adds a custom phone/shield/lock SVG and centred text. Page 4 disclaimer and the special thanks remain as approved.
-- `APP_VERSION=1.7` in one place; same network-first shell update strategy, revision-stamped modules and protected model cache.
+- YAMNet now differentiates **red** likely music from **amber** weak/moderate music or instrument-like detections, especially **under speech**. Neither red nor amber can be called “Music check passed.” Green only means **no segments were flagged at the configured thresholds**, not music-free certification.
+- The report explicitly names the **actual separation model used**: Quick MDX-Net 9482, Best MDX-Net Voc FT, or Studio HTDemucs v4. If Studio fell back to Best, the displayed model says Best. It also lists Gentle/Strong/Maximum strength.
+- No music separation model, audio encoder, gate or DSP was changed in this version; the user's live-tested v1.7 Quick/Studio functionality is preserved.
 
-## Tests and real-device acceptance
+## Tests
 
-```
+Run:
+
+```sh
+node tests/regression/v18-head.test.mjs
+node tests/regression/v18-maskcache.test.mjs
+node tests/regression/v18-music.test.mjs
+node tests/regression/v18-update.test.mjs
+node tests/regression/v18-release.test.mjs
 node tests/regression/tracker.test.mjs
-node tests/regression/v16-identity.test.mjs
-node tests/regression/v16-precision.test.mjs
 node tests/regression/v17-precision.test.mjs
-node tests/regression/v17-audio.test.mjs
-node tests/regression/v17-release.test.mjs
-python3 tests/v17-ui.py
+python3 tests/v18-ui.py
 ```
 
-Test fixtures:
-- `tests/regression/two-person-crossing-10s.mp4`: astronaut left→right and cameraman right→left over 10 seconds (1280×720 at 30fps) with crossing around 4–6 seconds.
-- `tests/regression/realistic-speech-music-10s.mp4`: voiced synthetic speech mixed with bass, drums and chords; reference WAVs are included.
+The `v18-maskcache.test.mjs` check additionally exercises the actual `MaskCache.compute()` method with simulated MediaPipe outputs at 3, 6.5, 7.5 and 9 seconds, confirming every defined head ROI pixel is concealed and no separated cameraman-only pixel is masked.
 
-| Validation | Result |
-|---|---|
-| Existing time-limited masking / keyframe movement | Passed in regression tests |
-| Simulated two-person separation, 300 frames | 0 changed cameraman-only mask pixels; 0 missed target frames (**simulation only**) |
-| Real PoseLandmarker astronaut/cameraman at 7.5 sec | **Not verified; Android acceptance required** |
-| Single person repeated lost prompts | Passed in prior synthetic tracking regression; real v1.7 result **not verified** |
-| Maximum extra DSP with simulated speech + drums/bass/chords | Approx. **4.97 dB** extra synthetic residual reduction; **not real model output** |
-| YAMNet before/after classification | Passed with mocked classifier; real model inference **not verified** |
-| Studio streamed download + Best fallback | Code/static tests; CORS, real model runtime **not verified** |
-| Splash timing, illustration sizing, disclaimer | Passed via embedded Chromium DOM harness |
-| MP4 audio/Android gallery/WhatsApp | Unchanged architecture, **not re-verified here** |
+The generated head test uses **synthetic pose landmarks** calibrated to the provided `astronaut-360.png` fixture, against the 300-frame two-person crossing geometry: the known image's **hair/forehead/eyes ROI** must be **100% masked**. It also checks zero altered mask pixels in the cameraman-only region after separation. **This is not real PoseLandmarker model inference or exported H.264 pixel analysis**. The audio check uses a **mock YAMNet classifier** to test amber/green logic and verifies the model-attribution code. The update test simulates waiting/active worker states. The mobile page test is run with embedded CSS and assets in Chromium because the test environment blocks navigation to a hosted origin.
 
-### Acceptance instructions
+Full outcomes and remaining device checks: `tests/TEST_REPORT.md`. Exact change inventory: `CHANGED_FILES_v1.8.md`.
 
-1. Android Chrome: after v1.7 deploy, clear stale update banner. Check large centered splash is visible ~1.85 seconds and every onboarding page displays correctly.
-2. Load `two-person-crossing-10s.mp4`; tap astronaut at 0s, Track →. Check 2, 4, 5.5, **7.5**, **8.9**, 9.3 seconds. Cameraman should be clean immediately after separation; check that any wrong candidate thumbnail and unnecessary lost prompts have been eliminated. Export and inspect the MP4 itself.
-3. Load the realistic music clip in Audio. Check Quick/Maximum and Best give **distinct audible outputs** and that the Music check strip actually appears with music / speech statuses. Test Studio and verify byte progress and automatic Best fallback after a network/model failure. If any model fails, select No audio or manually review the output.
-4. Check original/silent/cleaned AAC MP4 playback in Android Gallery and WhatsApp before sharing edited media publicly.
+## Live Android acceptance checklist
 
-See `tests/TEST_REPORT.md` for granular tests, and `CHANGED_FILES_v1.7.md` for an exact list of additions/modifications compared to v1.6.
+1. Test `tests/regression/two-person-crossing-10s.mp4`. Tap the **astronaut**, Track →, select Person outline + Pixelate; inspect **3, 6.5, 7.5 and 9 s**, paying particular attention to the hair, forehead and eyes. Check that the cameraman remains clean when separated. Inspect the **downloaded MP4**, not only the editor preview.
+2. Open the first-run flow in a clean/incognito browser context. At **390px** width, confirm all three steps are visible at once, and the Tap art is a single human silhouette plus a hand/touch ripple. Avoid clearing site storage if you need to keep saved projects.
+3. After deploying and reloading v1.8, confirm the **Update ready** banner does not persist. If a future version actually remains waiting, check that the banner is displayed only then.
+4. Run Quick Maximum or Studio with the known music clip. Confirm the risk strip shows **amber** if residual instrument-like YAMNet detections are above the conservative threshold beneath speech, and that the report names the model actually used. Listen before sharing; choose No audio if uncertain.
+
+No server, account, backend or API keys were added.
