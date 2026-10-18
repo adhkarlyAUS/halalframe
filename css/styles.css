@@ -241,3 +241,22 @@
 .export-advanced .two-cols{margin:9px 0}
 .audio-mute-tools input{max-width:100%}
 @media(max-width:590px){.codec-warning{margin:12px 10px}.export-advanced .two-cols{grid-template-columns:1fr}}
+
+/* v1.10 export success and explicit next-step decisions */
+.audio-risk-buttons{display:flex;flex-direction:column;gap:9px;margin-top:18px}
+.audio-risk-buttons .btn{min-height:48px;white-space:normal;text-align:center}
+.recommend-label{font-size:10px;opacity:.8}
+.export-success-dialog{width:min(610px,100%)}
+.export-success-dialog .section-head{margin-top:4px}
+.export-success-player{width:100%;aspect-ratio:16/9;max-height:55vh;background:#050807;object-fit:contain;border-radius:12px;border:1px solid #414a43;margin:10px 0}
+.export-success-dialog .big-action{min-height:52px;font-size:16px;margin:9px 0}
+.save-message{font-size:12px;line-height:1.55;color:#d6e6c7;border:1px solid #405743;border-radius:9px;padding:11px;background:#223027}
+.recent-exports-card{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+.recent-exports-list{display:grid;gap:6px;margin-top:9px}
+.recent-export-row{display:flex;align-items:center;justify-content:space-between;gap:8px;background:#292f2a;padding:7px;border-radius:9px}
+.recent-export-row .dim{flex:1;min-width:0;overflow-wrap:anywhere}
+.recent-export-actions{display:flex;gap:5px;flex-shrink:0}
+@media(max-width:620px){.recent-export-row{align-items:flex-start;flex-wrap:wrap}.recent-export-actions{width:100%}.recent-export-actions .btn{flex:1}}
+
+.tracking-state{border:1px solid #6c6345;background:#363022;color:#f4dba1;font-size:11px;padding:10px 11px;border-radius:9px;margin-bottom:11px;line-height:1.5}
+.tracking-state.complete{border-color:#3c6c40;background:#1e3424;color:#c7f3bb}
