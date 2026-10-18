@@ -87,29 +87,59 @@ export class AudioPanel{
       const worker=new Worker(new URL('../audio/music-worker.js?v='+window.APP_VERSION,import.meta.url),{type:'module'});
       this.worker=worker;this.busy=true;this.updateUI();
       const job=crypto.randomUUID();
+      $('audio-progress-wrap').classList.remove('hidden');
+      $('audio-progress').style.width='0%';
+      $('audio-progress-text').textContent='Starting private audio worker…';
       const output=await new Promise((resolve,reject)=>{
-        this._rejectJob=reject;
+        let settled=false,started=false,watchdog=null;
+        const stopTimer=()=>{if(watchdog!==null){clearTimeout(watchdog);watchdog=null;}};
+        const fail=error=>{if(settled)return;settled=true;stopTimer();reject(error);};
+        const finish=value=>{if(settled)return;settled=true;stopTimer();resolve(value);};
+        const armTimer=()=>{
+          stopTimer();
+          watchdog=setTimeout(()=>fail(new Error(
+            started?'No audio-processing progress for 30 seconds. The model may be out of memory or the browser may be stalled. Try Quick, a shorter clip, or No audio.':
+              'Audio worker did not start within 30 seconds. Reload while online and try again.'
+          )),30000);
+        };
+        // Cancel uses the same rejection path, ensuring the watchdog is cleared.
+        this._rejectJob=fail;
         worker.onmessage=e=>{
-          const d=e.data;if(d?.job!==job)return;
+          if(settled)return;
+          const d=e.data;
+          if(d?.type==='ready'&&!started){
+            // The worker registered its handler and finished module evaluation.
+            // Transfer input buffers ONLY after this acknowledgement.
+            started=true;armTimer();
+            $('audio-progress-text').textContent='Worker ready · preparing models on this device…';
+            try{worker.postMessage({type:'process',job,channels:ch,sampleRate:original.sampleRate,
+              quality:this.quality,strength:['gentle','strong','maximum'][Number($('audio-strength').value)]||'strong',strict:$('audio-strict').checked},transfer);
+            }catch(error){fail(new Error('Could not send audio to local worker: '+error.message));}
+            return;
+          }
+          if(d?.job!==job||!started)return;
           if(d.type==='progress'){
+            armTimer(); // Download/inference can be slow; require ongoing progress.
             const part=Math.max(0,Math.min(1,d.ratio||0));
-            // Stage ratios restart on each model. Show ONE monotonic job total,
-            // so the progress bar never jumps from 100% back to 1%.
+            // Stage ratios restart on each model. Show ONE monotonic job total.
             const vadModel=d.stage==='models'&&/Silero|voice detector/i.test(d.detail||'');
             const stageFraction=d.stage==='models'?(vadModel?.02+.13*part:.27+.15*part):
-              d.stage==='vad'?.15+.12*part:d.stage==='separate'?.42+.56*part:0;
+              d.stage==='vad'?.15+.12*part:d.stage==='separate'?.42+.54*part:
+              d.stage==='refine'?.96+.039*part:0;
             this.maxProgress=Math.max(this.maxProgress,stageFraction);
-            $('audio-progress-wrap').classList.remove('hidden');$('audio-progress').style.width=(100*this.maxProgress).toFixed(1)+'%';
+            $('audio-progress-wrap').classList.remove('hidden');
+            $('audio-progress').style.width=(100*this.maxProgress).toFixed(1)+'%';
             const secondsElapsed=(performance.now()-since)/1000;
             const eta=this.maxProgress>.12?Math.ceil((secondsElapsed/this.maxProgress)*(1-this.maxProgress)):null;
             $('audio-progress-text').textContent=`${d.detail||d.stage}${eta===null?'':` · ~${eta}s left`}`;
-          }else if(d.type==='delegate'){$('audio-backend').textContent='Audio AI: '+d.delegate;}
-          else if(d.type==='complete')resolve(d);
-          else if(d.type==='error')reject(new Error(d.message));
+          }else if(d.type==='delegate'){
+            armTimer();$('audio-backend').textContent='Audio AI: '+d.delegate;
+          }else if(d.type==='complete')finish(d);
+          else if(d.type==='error')fail(new Error(d.message));
         };
-        worker.onerror=e=>reject(new Error(`Audio worker failed: ${e.message}`));
-        worker.postMessage({type:'process',job,channels:ch,sampleRate:original.sampleRate,
-          quality:this.quality,strength:['gentle','strong','maximum'][Number($('audio-strength').value)]||'strong',strict:$('audio-strict').checked},transfer);
+        worker.onerror=e=>{e.preventDefault?.();fail(new Error(`Audio worker failed: ${e.message||'Unknown module or runtime error'}`));};
+        worker.onmessageerror=()=>fail(new Error('Audio worker sent a message the browser could not decode. Try again or select No audio.'));
+        armTimer(); // Also cover the period before the ready handshake.
       });
       const decoded=output.channels.map(b=>new Float32Array(b));
       const result=new AudioBuffer({numberOfChannels:decoded.length,length:decoded[0].length,sampleRate:output.sampleRate});
