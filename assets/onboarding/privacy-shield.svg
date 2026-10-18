@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 280" role="img" aria-labelledby="title">
+<title id="title">Your phone and your media are protected</title>
+<defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="#D5FF8D"/><stop offset="1" stop-color="#92E83F"/></linearGradient></defs>
+<rect x="95" y="18" width="150" height="246" rx="29" fill="#242D27" stroke="#8CBF6A" stroke-width="5"/>
+<rect x="108" y="34" width="124" height="201" rx="17" fill="#121B16"/>
+<rect x="148" y="244" width="43" height="5" rx="2.5" fill="#AAB7A7"/>
+<path d="M170 67 215 89V139Q210 184 170 207 130 184 125 139V89Z" fill="#2D4930" stroke="url(#g)" stroke-width="5"/>
+<path d="M148 134V124a22 22 0 0 1 44 0v10" fill="none" stroke="#D5FF8D" stroke-width="8" stroke-linecap="round"/>
+<rect x="140" y="133" width="60" height="48" rx="10" fill="url(#g)"/>
+<circle cx="170" cy="152" r="6" fill="#203B22"/><path d="M170 154v11" stroke="#203B22" stroke-width="5" stroke-linecap="round"/>
+<path d="M62 92h18m-9-9v18M260 174h18m-9-9v18" stroke="#B5F76B" stroke-width="3" opacity=".45" stroke-linecap="round"/>
+</svg>

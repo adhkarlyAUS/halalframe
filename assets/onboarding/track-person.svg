@@ -1,8 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="320" height="190" viewBox="0 0 320 190" fill="none">
+<style>
+@media(prefers-reduced-motion:no-preference){
+  .motion{animation:float 2.1s ease-in-out infinite alternate;transform-origin:center}
+  @keyframes float{from{transform:translateY(0)}to{transform:translateY(-5px)}}
+  .tap-ripple{animation:pulse 1.9s ease-out infinite;transform-origin:184px 92px}
+  @keyframes pulse{from{opacity:.7;transform:scale(.65)}to{opacity:0;transform:scale(1.1)}}
+  .follow-frame{animation:follow 2.2s ease-in-out infinite alternate}
+  @keyframes follow{from{transform:translateX(-13px)}to{transform:translateX(5px)}}
+  .export-arrow{animation:out 1.6s ease-in-out infinite alternate}
+  @keyframes out{from{transform:translateX(-6px);opacity:.5}to{transform:translateX(5px);opacity:1}}
+}
+</style>
 <path d="M48 140q75-55 130-28t99-52" stroke="#B8F451" stroke-dasharray="5 12" stroke-width="2" opacity=".36"/>
 <g opacity=".23" transform="translate(31 15)"><circle cx="72" cy="57" r="16" fill="#A0AAA1"/><path d="M55 84h34l8 42H47Z" fill="#A0AAA1"/><path d="m63 123-7 30m26-30 8 30" stroke="#A0AAA1" stroke-width="10" stroke-linecap="round"/></g>
 <g opacity=".48" transform="translate(81 2)"><circle cx="72" cy="57" r="16" fill="#A0AAA1"/><path d="M55 84h34l8 42H47Z" fill="#A0AAA1"/><path d="m63 123-7 30m26-30 8 30" stroke="#A0AAA1" stroke-width="10" stroke-linecap="round"/></g>
 <g transform="translate(143 -3)"><circle cx="72" cy="57" r="17" fill="#D6DED3"/><path d="M53 84h38l9 43H44Z" fill="#B1BBAF"/><path d="m63 122-9 31m29-31 10 31" stroke="#B1BBAF" stroke-width="11" stroke-linecap="round"/><path d="m55 92-17 24m51-25 18 17" stroke="#B1BBAF" stroke-width="10" stroke-linecap="round"/></g>
-<rect x="177" y="22" width="82" height="141" rx="15" stroke="#B8F451" stroke-width="2.5" stroke-dasharray="12 4"/><path d="M178 50V36q0-13 13-13h13m44 0q10 0 10 11v16m0 85v15q0 12-13 12h-11m-56-27v14q0 13 13 13h10" stroke="#E2FFAE" stroke-width="3.5" stroke-linecap="round"/>
+<rect class="follow-frame" x="177" y="22" width="82" height="141" rx="15" stroke="#B8F451" stroke-width="2.5" stroke-dasharray="12 4"/><path d="M178 50V36q0-13 13-13h13m44 0q10 0 10 11v16m0 85v15q0 12-13 12h-11m-56-27v14q0 13 13 13h10" stroke="#E2FFAE" stroke-width="3.5" stroke-linecap="round"/>
 <text x="160" y="182" text-anchor="middle" fill="#BAC4B8" font-family="Arial,sans-serif" font-size="10" letter-spacing="2">FOLLOWS THE PERSON</text>
 </svg>
