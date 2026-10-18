@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="190" viewBox="0 0 320 190" fill="none">
+<defs><linearGradient id="lime" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#D6FF86"/><stop offset="1" stop-color="#A9EC4B"/></linearGradient></defs>
+<path d="M110 25h-13q-9 0-9 9v15M210 25h13q9 0 9 9v15M88 136v17q0 11 10 11h12M232 136v17q0 11-10 11h-12" stroke="url(#lime)" stroke-width="3" stroke-linecap="round" opacity=".7"/>
+<circle cx="160" cy="54" r="22" fill="#949F95"/><path d="M128 103c0-16 14-28 32-28s32 12 32 28v41h-18l-5-26-2 35h-14l-2-35-6 26h-17v-41Z" fill="#758377"/>
+<path d="M127 102c-2 19-6 29-9 39M193 102c2 19 6 29 9 39" stroke="#758377" stroke-width="12" stroke-linecap="round"/>
+<circle cx="184" cy="92" r="25" stroke="#B8F451" stroke-width="2" opacity=".6"/><circle cx="184" cy="92" r="38" stroke="#B8F451" stroke-width="1.4" opacity=".27"/>
+<path d="m188 93 1 44 10-11 11 22 9-4-10-22 16-1-37-28Z" fill="#F3F9EB" stroke="#B8F451" stroke-width="2"/>
+<text x="160" y="182" text-anchor="middle" fill="#BAC4B8" font-family="Arial,sans-serif" font-size="10" letter-spacing="2">TAP ONCE</text>
+</svg>
