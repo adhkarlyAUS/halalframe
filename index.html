@@ -3,18 +3,19 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#17191b"><meta name="description" content="HalalFrame by Adhkarly — private, on-device video concealment editor.">
-<title>HalalFrame v1.4 — An Adhkarly Product</title>
+<title>HalalFrame v1.5 — An Adhkarly Product</title>
 <style>.splash-screen{position:fixed;inset:0;z-index:220;background:#111416;color:#f6f7f3;display:flex;align-items:center;justify-content:center}.splash-content{width:min(600px,90%);text-align:center}.splash-logo{width:min(100%,480px)}.splash-screen.hidden{display:none!important}</style>
-<link rel="apple-touch-icon" href="assets/icon-192.png">
-<link rel="icon" href="assets/logo.png" type="image/png">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=1.5">
+<link rel="icon" href="assets/favicon-32.png?v=1.5" type="image/png" sizes="32x32">
 <script>
 // The ONE release constant: CSS, manifest, entry module, transitive imports and
 // service-worker registration all derive their cache-busting URLs from here.
-const APP_VERSION='1.4';window.APP_VERSION=APP_VERSION;
+const APP_VERSION='1.5';window.APP_VERSION=APP_VERSION;
 (function bootstrapVersionedAssets(){
   const paths=['js/main.js','js/state.js','js/engine/ai.js','js/engine/render.js',
     'js/engine/segmentation.js','js/engine/export.js','js/engine/ffmpeg-worker.js',
-    'js/engine/tracker.js','js/ui/canvas-input.js','js/ui/timeline.js','js/ui/first-run.js','js/ui/share-target.js'];
+    'js/engine/tracker.js','js/ui/canvas-input.js','js/ui/timeline.js','js/ui/first-run.js','js/ui/share-target.js',
+    'js/ui/audio-panel.js','js/audio/models.js','js/audio/dsp.js','js/audio/music-worker.js'];
   const imports={};
   for(const path of paths)imports[new URL(path,document.baseURI).href]=new URL(`${path}?v=${APP_VERSION}`,document.baseURI).href;
   const map=document.createElement('script');map.type='importmap';map.textContent=JSON.stringify({imports});document.head.append(map);
@@ -68,7 +69,7 @@ const APP_VERSION='1.4';window.APP_VERSION=APP_VERSION;
     <div class="micro">Your media is not uploaded. The optional AI model downloads from Google the first time you use it. All editing runs in this browser.</div>
   </section>
   <section id="editor" class="editor hidden" aria-label="Video editor">
-    <div class="editor-header"><div><div class="eyebrow">THE EDITOR</div><h2 id="filename">Untitled project</h2><span id="media-details" class="dim"></span><div id="fps-controls" class="fps-controls hidden"><label for="fps-input">Video FPS</label><select id="fps-input"><option value="auto">Auto (30 until measured)</option><option value="24">24</option><option value="25">25</option><option value="30">30</option><option value="50">50</option><option value="60">60</option></select></div></div><div class="editor-actions"><button id="clear-project" class="btn outline">Clear project</button><button id="new-file" class="btn subtle">Change file</button></div></div>
+    <div class="editor-header"><div><div class="eyebrow">THE EDITOR</div><h2 id="filename">Untitled project</h2><span id="media-details" class="dim"></span><div id="fps-controls" class="fps-controls hidden"><label for="fps-input">Video FPS</label><select id="fps-input"><option value="auto">Auto (30 until measured)</option><option value="24">24</option><option value="25">25</option><option value="30">30</option><option value="50">50</option><option value="60">60</option></select></div></div><div class="editor-actions"><button id="clear-project" class="btn outline clear-all" type="button">↺ CLEAR ALL CHANGES</button><button id="new-file" class="btn subtle">Change file</button></div></div>
     <div class="editor-grid">
       <div class="edit-left">
         <div class="viewer-shell"><canvas id="preview" aria-label="Video preview. Tap a person or draw a rectangle using the controls below."></canvas><div class="viewer-badge" id="preview-badge">PREVIEW</div><button id="temporary-reveal" class="reveal-source hidden" type="button">Temporarily show original</button><div id="viewer-empty" class="viewer-empty">Ready</div></div>
@@ -78,18 +79,19 @@ const APP_VERSION='1.4';window.APP_VERSION=APP_VERSION;
         <div id="timeline-card" class="timeline-card"><div class="section-head"><h3>Concealment timeline</h3><span class="dim tiny">Drag bar ends to set visibility</span></div><div id="timeline-lanes" class="lanes"></div><div class="hint">Each bar only covers its own start–end interval. Dots mark saved positions.</div></div>
       </div>
       <aside class="controls">
-        <div class="control-card"><h3>1 · Find or select</h3>
+        <nav class="editor-tabs" role="tablist" aria-label="Editor settings"><button id="tab-visual" class="editor-tab active" role="tab" aria-selected="true">◈ Visual</button><button id="tab-audio" class="editor-tab" role="tab" aria-selected="false">♫ Audio</button></nav>
+        <div class="control-card" data-visual-settings><h3>1 · Find or select</h3>
           <div class="button-grid"><button id="find-people" class="btn primary">◎ Find all people</button><button id="cover-everyone" class="btn secondary">Cover everyone</button></div>
           <div class="mode-group" role="group" aria-label="Selection method"><button class="mode selected" id="mode-select">☝ Tap person</button><button class="mode" id="mode-draw">▣ Draw new box</button><button class="mode" id="mode-key">◆ Add keyframe</button></div>
           <label class="field">Tracking accuracy<select id="tracking-accuracy"><option value="best">Best · every frame (default under 30 s)</option><option value="fast">Fast · 10 fps</option></select></label>
           <p class="hint" id="mode-help">Pause the video, then tap someone to create a tracked concealment.</p>
           <div class="dim tiny" id="ai-status">AI loads only when you request detection.</div>
         </div>
-        <div class="control-card"><div class="section-head"><h3>2 · Selected region</h3><button id="delete-mask" class="text-btn danger" disabled>Delete</button></div>
+        <div class="control-card" data-visual-settings><div class="section-head"><h3>2 · Selected region</h3><button id="delete-mask" class="text-btn danger" disabled>Delete</button></div>
           <div id="no-selection" class="empty-selection">Select or draw a region to edit its settings.</div>
           <div id="selection-panel" class="hidden">
             <label class="field">Label<input id="mask-label" type="text" maxlength="55"></label>
-            <div class="two-cols"><label class="field">Effect<select id="effect"><option value="pixelate">Pixelate (default)</option><option value="blur">Blur</option></select></label><label class="field">Shape<select id="shape"><option value="box">Box</option><option value="outline">Person outline</option><option value="skin">Exposed skin</option><option value="hair">Hair only</option></select></label></div>
+            <div class="two-cols"><label class="field">Effect<select id="effect"><option value="pixelate">Pixelate (default)</option><option value="blur">Blur</option></select></label><label class="field">Shape<select id="shape"><option value="outline">Person outline (default)</option><option value="box">Box</option><option value="skin">Exposed skin</option><option value="hair">Hair only</option></select></label></div>
             <div class="two-cols"><label class="field">Strength<input id="strength" type="range" min="3" max="60" step="1"></label><label class="field">Padding <span id="padding-label">15%</span><input id="padding" type="range" min="0" max="35" step="1"></label></div>
             <div class="two-cols"><label class="field">Feather <span id="feather-label">0px</span><input id="feather" type="range" min="0" max="24" step="1" value="0"></label><label class="field">Safety margin <span id="safety-label">8px</span><input id="safety-margin" type="range" min="0" max="40" step="1" value="8"></label></div>
             <label class="check"><input id="include-face" type="checkbox"> Include face skin when using Skin shape</label>
@@ -100,6 +102,29 @@ const APP_VERSION='1.4';window.APP_VERSION=APP_VERSION;
           </div>
           <div class="undo-row"><button id="undo" class="btn subtle small" disabled>↶ Undo</button><button id="redo" class="btn subtle small" disabled>↷ Redo</button></div>
         </div>
+        <div class="control-card audio-panel hidden" id="audio-panel" role="tabpanel" aria-label="Audio editing">
+          <div class="eyebrow lime">AUDIO EDITOR · 100% ON YOUR PHONE</div>
+          <h3>Keep the speech. Control the sound.</h3>
+          <label class="field">Choose soundtrack<select id="audio-mode">
+            <option value="original">Keep original audio</option>
+            <option value="none">No audio — completely silent</option>
+            <option value="clean">Remove music, keep speech (AI)</option>
+          </select></label>
+          <p class="hint" id="audio-summary">Original sound is kept.</p>
+          <div id="audio-clean-settings" class="audio-clean-settings hidden">
+            <div class="audio-warning"><strong>Important</strong> · No AI removes 100% of music in every recording. Listen to the entire result before sharing. <strong>No audio</strong> is the safest option.</div>
+            <label class="field">Quality<select id="audio-quality"><option value="quick">Quick · ~30 MB · lower memory</option><option value="best">Best · ~67 MB · slower, more memory</option></select></label>
+            <label class="field" for="audio-strength">Music suppression <strong id="audio-strength-label">Strong</strong></label><input id="audio-strength" type="range" min="0" max="2" step="1" value="1" aria-label="Music suppression strength: Gentle, Strong or Maximum"><div class="strength-marks" aria-hidden="true"><span>Gentle</span><span>Strong</span><span>Maximum</span></div>
+            <label class="check audio-strict"><input type="checkbox" id="audio-strict"> Strict: mute speech intervals if strong non-voice sound is suspected (may also mute speech)</label>
+            <p class="hint" id="audio-model-size">First download: voice detector + Quick model.</p>
+            <div id="audio-cache" class="dim tiny">Models download once after you tap Process</div>
+            <button type="button" id="audio-process" class="btn primary block">Download model &amp; clean audio</button>
+            <button type="button" id="audio-cancel" class="btn outline small hidden">Cancel processing</button>
+            <div id="audio-progress-wrap" class="audio-progress-wrap hidden"><div class="progress-track"><div id="audio-progress" class="progress-fill"></div></div><p id="audio-progress-text" class="hint" aria-live="polite">Ready</p></div>
+            <div id="audio-backend" class="dim tiny">WebGPU preferred · WASM fallback</div>
+            <div class="audio-preview-control"><strong>A / B preview · 5 seconds from the playhead</strong><div class="audio-buttons"><button id="audio-preview-original" class="btn subtle small" type="button">▶ Original</button><button id="audio-preview-clean" class="btn secondary small" type="button" disabled>▶ Cleaned</button><button id="audio-preview-stop" class="btn subtle small" type="button" disabled>■ Stop</button></div><div class="hint" id="audio-preview-status">Pause the video, then compare a section.</div></div>
+          </div>
+        </div>
         <div class="control-card"><h3>3 · Check and export</h3><p class="hint">Preview before sharing. AI may miss frames or people. Use manual corrections where needed.</p>
           <label class="check"><input type="checkbox" id="debug"> Show AI debug information</label>
           <label class="check"><input type="checkbox" id="preview-mask"> Preview precise masks in lime</label>
@@ -107,8 +132,8 @@ const APP_VERSION='1.4';window.APP_VERSION=APP_VERSION;
           <div id="photo-export" class="hidden"><div class="two-cols"><button id="jpg-export" class="btn primary">Save JPG</button><button id="png-export" class="btn secondary">Save PNG</button></div></div>
           <div id="video-export" class="export-box hidden">
             <label class="field">Quality &amp; size<select id="export-preset"><option value="720">Smart export · 720p (recommended)</option><option value="1080">1080p · HD</option><option value="original">Original resolution</option></select></label>
-            <div id="export-estimate" class="dim tiny" aria-live="polite">Select a video to see the estimated size.</div>
-            <button id="mp4-export" class="btn primary block">Export MP4 + audio</button>
+            <div id="export-estimate" class="dim tiny" aria-live="polite">Select a video to see the estimated size.</div><div id="export-audio-summary" class="audio-export-summary">Audio: Original</div>
+            <button id="mp4-export" class="btn primary block">Export MP4</button>
             <div id="export-result" class="export-result hidden"><strong id="export-result-title">Export complete</strong><p class="hint" id="export-result-message"></p><div class="two-cols"><button id="download-video" class="btn secondary">Download</button><button id="share-video" class="btn secondary">Share</button></div></div>
             <p class="hint">H.264 + AAC where supported. MP4/audio fallback downloads FFmpeg (~32 MB). Never share without reviewing every frame.</p>
           </div>
@@ -118,13 +143,18 @@ const APP_VERSION='1.4';window.APP_VERSION=APP_VERSION;
   </section>
   <section class="discover-card"><div class="discover-label">ALSO FROM OUR DEVELOPERS</div><div class="discover-wordmark"><span>adhkar</span><span class="discover-ly">ly</span></div><p>Daily adhkar, Qur'an, du'as and Islamic learning — built by the Adhkarly team.</p><div class="discover-actions"><button class="btn subtle" disabled title="App link not configured">Android · Coming soon</button><button class="btn subtle" disabled title="App link not configured">iPhone · Coming soon</button><button class="btn subtle" disabled title="App link not configured">Web · Coming soon</button></div></section>
   <section class="about-grid"><article class="info-card"><h3>Private by design</h3><p>Your photo or video remains in your browser tab. No accounts, servers, API keys or uploaded media. AI models must download once before detection works.</p></article><article class="info-card"><h3>Before you share</h3><p>AI can miss a person, a frame or exposed awrah. Review everything manually. Nothing in this app guarantees religious compliance.</p><button id="ruling-open" class="text-btn">Read the reminder ↗</button></article></section>
-  <footer class="footer"><div>HALALFRAME v1.4 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p class="footer-credit">Developed by FD Abu Ishaq and Muzzy</p><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · <button id="footer-disclaimer" class="text-btn">View disclaimer again</button> · <button id="footer-social-help" class="text-btn">Social media help</button></p></footer>
+  <footer class="footer"><div>HALALFRAME v1.5 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p class="footer-credit">Developed by FD Abu Ishaq and Muzzy</p><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · <button id="install-app" class="text-btn">Install app</button> · <button id="footer-disclaimer" class="text-btn">View disclaimer again</button> · <button id="footer-social-help" class="text-btn">Social media help</button></p></footer>
 </main>
 <div id="update-banner" class="update-banner hidden" role="status" aria-live="polite">
   <span>Update ready — tap to reload</span><button type="button" id="update-reload" class="btn primary small">Reload</button>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div id="busy" class="busy hidden" role="status" aria-live="polite"><div class="busy-inner"><div class="spinner"></div><h3 id="busy-title">Processing</h3><div id="busy-copy" class="dim">Please wait…</div><div class="progress-track"><div id="busy-progress" class="progress-fill"></div></div><button id="cancel-task" class="btn outline">Cancel</button></div></div>
+<div id="clear-changes-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="clear-changes-title">
+  <div class="modal"><div class="eyebrow lime">RESTART THIS EDIT</div><h2 id="clear-changes-title">Remove all blurs and start again on this video?</h2>
+  <p>The video stays open. All regions, masks and tracking points will be cleared. You can press Undo once to bring your last edit back.</p>
+  <div class="modal-buttons"><button id="clear-changes-cancel" type="button" class="btn outline">Keep my edits</button><button id="clear-changes-yes" type="button" class="btn primary">Remove all changes</button></div></div>
+</div>
 <div id="restore-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="restore-title">
   <div class="modal"><div class="eyebrow lime">SAVED PROJECT FOUND</div><h2 id="restore-title">Restore previous edits for this video?</h2>
   <p id="restore-description">The original video is never stored. Previous concealments will only be used if you choose Restore.</p>

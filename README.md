@@ -1,103 +1,91 @@
-# HalalFrame v1.4 — An Adhkarly Product
+# HalalFrame v1.5 — An Adhkarly Product
 
-Static, **100% free**, privacy-first photo/video concealment PWA. No build step, login, backend, API keys, or paid APIs. The original `assets/logo.png` remains the approved HalalFrame/Adhkarly identity. All media processing runs locally in the browser; MediaPipe runtime/model files and pinned export libraries are downloaded from their providers as needed. User media is not uploaded to those providers.
+**Status:** Static, installable PWA **test build**, upgraded in place from v1.4. Browser-simulated regression checks passed; **real ONNX inference, real cleaned-audio quality, Android installation and end-to-end MP4 AAC playback have not yet been verified on hardware**. Do not describe a video as guaranteed free of awrah or music. **No account, backend, server media upload, paid API or API key.** Input photos, video and audio are processed on the user's device. Initial JavaScript/WASM/ONNX model downloads require internet access; only the weights and code, not user media, are fetched from third-party CDNs.
 
-**Release basis:** This is a targeted modification of **v1.3**. The owner verified v1.3 running real MediaPipe on Android Chrome: one person from 0–10 s, 301 Find All samples, successful restore/start-fresh, and working code updates. None of the tracking, segmentation, media-encoding, or timeline algorithms have been rewritten in v1.4. The **only render-engine modification** removes the unwanted black/brand effects. Independent Android v1.4 verification remains necessary.
+Keep the approved `assets/logo.png` and Adhkarly purple ownership signature. Credits: **Developed by FD Abu Ishaq and Muzzy.** Special thanks to Mustapha (Muzzy) are preserved from v1.4.
 
-## v1.4 changes
+## How to run and publish free
 
-### 1. Credits and Adhkarly ownership
+1. Extract the ZIP. The folder contents must be served from a web root, with `index.html`, `css/`, `js/`, `assets/`, `manifest.json`, and `sw.js` together. Do **not** upload a containing folder one level deeper.
+2. For desktop local testing: `python3 -m http.server 8080` inside the extracted folder, then visit `http://localhost:8080`. Direct `file://` opening displays a helpful message instead of running module scripts.
+3. For a free public HTTPS app: create/use `https://github.com/adhkarlyaus/halalframe`, upload and overwrite all extracted files into the **repository root**, commit to `main`, then in **Settings → Pages → Deploy from branch → main / (root)**. Open `https://adhkarlyaus.github.io/halalframe/?v=1.5` after GitHub Pages finishes.
+4. On Android Chrome use **Install app** in the footer / About, or Chrome's menu → **Install app**. Existing installed PWAs may need a fresh installation if Android delays refreshing their manifest/icons. On iPhone use Safari → Share → Add to Home Screen. On standalone launch the charcoal HalalFrame splash still displays.
+5. Do a hard refresh if an older document is still open. Versioned imports and the network-first service worker are carried forward from v1.3/v1.4. Old shell caches are removed while downloaded MediaPipe weights remain available offline.
 
-About Us, the final onboarding page, and the footer now attribute the app to **FD Abu Ishaq and Muzzy**, including this requested special thanks:
+## v1.5 changes — same v1.4 tracking and segmentation engines
 
-> Special thanks to my friend Mustapha (Muzzy) for inspiring this idea. I ask Allah that the reward for this goes to him and to all the muwahhideen who are trying to uphold the seriousness of forbidding munkar and encouraging goodness.
+### Person outline by default
 
-The original HalalFrame logo and lime/charcoal theme remain unchanged, as does Adhkarly's purple signature. The Discover Adhkarly links remain intentionally disabled until real links are configured.
+Every selection from **Tap Person**, **Find all people**, **Cover everyone**, and **Draw** uses shape `outline` with Pixelate as the effect. The outline uses MediaPipe's hair, skin and clothing classes within the tracked box; if masks fail/are empty/too small, the preview and MP4 export both use the **full padded box**, never an empty mask. Existing project selections retain their chosen shape. The v1.4 source detection, tracker, timeline, first-run gate, export review, and Adhkarly branding remain intact.
 
-### 2. Exactly two concealment effects
+### CLEAR ALL CHANGES
 
-- **Pixelate** (default for Tap Person, Draw, Find All and Cover Everyone); strength `42` for strong initial concealment, adjustable `3–60`.
-- **Blur** (user-selectable) with the original adjustable strength slider.
-- **Black** and **HalalFrame-branded fill** have been removed from the effect menu **and the renderer**. No old effect branches remain in export rendering because preview/export share `renderFrame()`.
-- On restoring an old saved draft (and on Undo/Redo), unsupported effects are converted to Pixelate without changing the track, time range, shape or frame coverage. Converted black/brand masks get at least 42 pixelation strength. The selected effect is then saved back to IndexedDB.
-- Intentional **Whole Frame** and **Whole Video** editing controls remain available, but can now apply only Blur or Pixelate.
+A prominent `↺ CLEAR ALL CHANGES` button appears in the editor header. Its confirmation reads **“Remove all blurs and start again on this video?”**. Confirming clears masks and scan results and persisted drafts, keeping the loaded source. Press **Undo** immediately to restore the previous edits once; the restored project is then saved normally. Existing individual deletion and Start Fresh remain.
 
-### 3. Splash + required first-run onboarding
+### Audio tab and preview
 
-At application startup the approved logo appears on a dark animated splash with a live AI-loading state and indeterminate progress. Model initialization is **actually started**; there is no fake percentage. The splash does not hold the user indefinitely on a slow or offline connection (6.5-second soft limit). The model can finish in the background while onboarding is displayed. Reduced-motion settings disable animations.
+The editor has **Visual** and **Audio** tabs, *before* export:
 
-For new users, full-screen onboarding **blocks the app** until they complete:
+- **Keep original audio:** Preserves original audio, using the existing WebCodecs AAC / ffmpeg.wasm fallback.
+- **No audio:** Final MP4 contains **no audio stream**, not an encoded silent stream. If WebCodecs is unsupported, the FFmpeg fallback uses `-an`.
+- **Remove music, keep speech:** Requires user-initiated on-device processing. A Worker loads a speech detector plus a voice-separation model, removes detected non-speech intervals, then hands the generated PCM to the **same existing MP4 video exporter** for local AAC encoding or clean-WAV FFmpeg muxing. If cleaning or muxing fails, export is blocked: the original music is **never silently substituted**.
 
-1. Welcome
-2. How it works — Tap → Track → Export
-3. Privacy — media stays on the device
-4. Disclaimer — AI can miss people/awrah/frames, full manual review is necessary, and the app does not issue religious rulings.
+Audio tab controls: **Quick / Best**, a 3-stop **Gentle / Strong / Maximum slider**, optional **Strict — mute suspect intervals even under speech** (may remove speech), visible model download sizes, backend (WebGPU/WASM), progress, Cancel, and **A/B original vs cleaned** five-second previews. The audio selection is shown on the MP4 export card. Export UI still enforces the user's existing explicit “I checked the result” confirmation.
 
-The last page includes the developer and special-thanks credits. **I accept & start** stays disabled until the checkbox is checked. Consent is saved in `localStorage` under `halalframe-disclaimer-accepted-v1` and is not repeated on ordinary visits. Users can reopen the disclaimer via the footer or About Us, where a review-only mode has a Close action.
+**Limitations:** MDX models isolate *vocals*, not religiously classify music, and may retain instruments or remove speech. Silero VAD can miss quiet speech or treat singing as vocal content. The strict mode uses **non-voice residual energy**, NOT a separately trained music classifier; it can wrongly mute speech. **There is no scientifically justified 100% guarantee** that a cleaned track has no music. Listen to the complete processed audio before sharing. **No audio** remains the safest available option. Most Android devices will take significantly longer than real time to separate longer audio; 120 s maximum, Best reduced to 45 s on devices reporting ≤4 GB RAM. Short clips recommended.
 
-**Every** photo or video export now first opens a separate *Have you reviewed the entire result?* modal. Its checkbox must be checked before export begins. The old inconspicuous checkbox was removed.
+### Exact pinned models, size, licence and sources
 
-### 4. Android share-to-HalalFrame (no social downloader)
+All models are fetched directly by the Worker only after the user presses **Download model & clean audio**; results are locally SHA-256 checked on first download and stored in CacheStorage `halalframe-audio-models-v1.5` for subsequent use offline. Model weights are **not packaged in the small ZIP**. Model metadata and immutable URLs are in `js/audio/models.js`.
 
-`manifest.json` declares a Web Share Target (`POST` + `multipart/form-data`) for images/video. When **the installed Android PWA** is selected from the Gallery or Files share sheet:
+| Model/engine | Use | Remote weight size | Reported licence | Immutable origin |
+|---|---|---:|---|---|
+| Silero VAD ONNX | Speech activity; 16 kHz, 512-sample steps + 64 context | ~2.33 MB | MIT | [snakers4/silero-vad, commit 60b7ffa](https://github.com/snakers4/silero-vad/tree/60b7ffa243625ebdc1070275a29f18c87843786a) |
+| **Quick** UVR MDXNET 9482 ONNX | Vocals vs accompaniment | 29,704,436 bytes (~29.7 MB decimal) | MIT-licensed HF model repository | [Politrees/UVR_resources — MDXNet/UVR_MDXNET_9482.onnx](https://huggingface.co/Politrees/UVR_resources/blob/main/models/MDXNet/UVR_MDXNET_9482.onnx) at `8cc4418db60d96e501f42889370b8bf3eb6df2d2` |
+| **Best** UVR MDX-NET Voc FT ONNX | Larger vocal separation model | 66,762,490 bytes (~66.8 MB decimal) | MIT-licensed HF model repository | [Politrees/UVR_resources — MDXNet/UVR-MDX-NET-Voc_FT.onnx](https://huggingface.co/Politrees/UVR_resources/blob/main/models/MDXNet/UVR-MDX-NET-Voc_FT.onnx) at same commit |
+| ONNX Runtime Web | Local WebGPU, with WASM fallback | Browser engine + wasm (CDN) | MIT | `onnxruntime-web@1.22.0` via jsDelivr |
 
-1. Chrome sends the shared media file to the PWA's **same-origin service worker** at `./share-target`.
-2. The service worker intercepts the POST (without a GitHub Pages server) and temporarily saves the shared `File` in **local IndexedDB** (`halalframe-shared-media-v1`).
-3. It returns `303 See Other` to `./?shared=<random token>`.
-4. After any first-run disclaimer acceptance, the app reads the file, **deletes that local temporary copy**, and opens the existing editor with `openFile()`.
+**Deliberate model choice:** Quick uses a **29.7 MB MDX-Net vocal separator**, not DeepFilterNet3. DeepFilterNet's complete native signal chain isn't supplied as a single directly usable browser ONNX model in this app. The Quick and Best models here are both *vocal-isolation* models, with verified Hugging Face file records, SHA-256s and pinned revision. **Verification of file existence and hashes is not equivalent to successful model execution on Android**. The licence noted above is the host repository's MIT declaration; verify all upstream weight provenance/licence obligations before wider commercial advertising distribution.
 
-Large files are subject to browser and phone storage limits. If sharing is interrupted before the app imports the file, a local temporary copy may remain until the site data is cleared. Nothing is transmitted to an app backend.
+**Important hosting/CORS constraint:** GitHub Pages is a static host. Third-party model URLs must permit CORS and large cross-origin streaming requests. If a host blocks the browser, this release shows a failure, never a fake successful result. The engine can be reconfigured to vend weights as static files on GitHub Pages (no backend) if permitted by redistribution terms and repository limits.
 
-**Platform limitation:** Web Share Target works only with supported browsers and an *installed* PWA, particularly Chrome on Android. Some social apps share a **URL instead of the underlying file**. HalalFrame does not download from YouTube, Instagram, Facebook or TikTok and shows a useful explanation when it receives a link without a media file. For an already-installed v1.3 PWA, Android may not register the new share target until Chrome updates the installed manifest; if it still does not appear, **remove just the HalalFrame home-screen installation and install it again from the updated v1.4 URL**. You do not need to delete the site's saved draft or AI cache for this step.
+### Audio pipeline detail
 
-See [MDN Web Share Target](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Manifest/Reference/share_target).
+`js/audio/music-worker.js` (ES module worker) loads `onnxruntime-web@1.22.0`, negotiates WebGPU→WASM, verifies and caches weights, resamples source audio to 16 kHz for Silero VAD, runs speech scoring, applies a padded/smoothed time gate, and resamples stereo to 44.1 kHz for MDX-Net STFT. Quick: `4096`-point FFT, `[1,4,2048,256]` input; Best: `6144`-point FFT, `[1,4,3072,256]` input. Outputs are inverse-STFT'd, crossfaded, filtered to detected speech, and handed back as transferable buffers. `js/audio/dsp.js` implements the STFT/iSTFT and resampling. Worker cancellation terminates model operations; no server execution.
 
-### 5. Existing update reliability remains
+The visual display is not coupled to cleaning progress, and the original photo/video remains on-device. Videos are not modified in their source file. In the optional cleaned export mode the AAC encoder uses **cleaned PCM**, not original audio. On unsupported AAC WebCodecs it may fall back to local FFmpeg with a **cleaned WAV** input; if that fails, it must error rather than leak original music.
 
-`APP_VERSION='1.4'` in `index.html` drives CSS, all ES-module paths via import map, manifest and `sw.js?v=1.4`. The service worker remains **network-first for app files**, cache-first for large pinned AI model/wasm files, calls `skipWaiting()` and `clients.claim()`, and cleans old shell caches. An update banner appears if necessary. A shared file import will not be interrupted by automatic update reload.
+### Installable app and artwork
 
-## Run locally
+All visual branding reuses the approved image. The app icon is an isolated **lime frame glyph on charcoal** from the approved logo, with safe padding. New PNGs: `assets/icon-{48,72,96,128,192,256,384,512}.png`, `assets/icon-maskable-512.png` (mark contained inside the centre maskable safe zone), `assets/apple-touch-icon.png` (180×180), `assets/favicon-32.png`, plus `assets/screenshot-{welcome,editor,audio}.png` at 390×844. `manifest.json` includes stable identity, standalone display, app category/description, icons, Android Share Target, and three narrow screenshots. `sw.js` caches app shell/version 1.5, optional ONNX assets after first use, and retains the pinned MediaPipe cache.
 
-From the folder with `index.html`:
+## Regression tests and how to verify on Android
 
-```bash
-python3 -m http.server 8000
-```
-
-Open `http://localhost:8000` in a Chrome/Edge browser. For normal Android testing, use the live **HTTPS** deployment. Opening `index.html` with `file://` displays a friendly warning because modules and service workers require a served origin.
-
-## Deploy to GitHub Pages (existing site)
-
-1. Download the v1.4 ZIP, unzip it, and **upload all its contents** (not an extra enclosing directory) to the root of <https://github.com/adhkarlyaus/halalframe>, replacing identical paths. Commit to `main`.
-2. Check repository **Settings → Pages → Deploy from branch → main / (root)**; wait for completion.
-3. Open <https://adhkarlyaus.github.io/halalframe/?v=1.4> in Android Chrome. The footer must say **v1.4**. Test in a private/incognito context or clear the acceptance key **only if you specifically want to repeat first-run onboarding**.
-4. If not installed, choose Chrome's **Install app/Add to Home screen**. Then share a local photo/video **file** from Gallery/Files → Share → HalalFrame. If HalalFrame doesn't appear after updating an existing installation, reinstall the PWA *installation* (not the full origin data), as noted above.
-5. Test a real Android export. Check video quality, audio, actual visibility of people/awrah and WhatsApp playback before distributing anything.
-
-## Tests
-
-From the project root, with Node 22+:
+Run from repo root:
 
 ```bash
 node tests/regression/tracker.test.mjs
 node tests/regression/v13-safety.test.mjs
-node tests/regression/v13-release.test.mjs
 node tests/regression/v13-worker.test.mjs
-node tests/regression/v14-release.test.mjs
 node tests/regression/v14-share-target.test.mjs
-python tests/regression/verify_media.py
+node tests/regression/v15-release.test.mjs
+node tests/regression/v15-audio.test.mjs
+ffprobe -v error -show_streams tests/regression/speech-music-regression-10s.mp4
 ```
 
-Optional isolated Chromium UI test, requiring Python Playwright and a system Chromium binary:
+A 10-second **speech plus synthetic musical loop** fixture is included at `tests/regression/speech-music-regression-10s.mp4`, and separate reference WAVs at `tests/regression/speech-reference.wav`, `music-reference.wav`, and `speech-music-mix.wav`. Run `python tests/regression/make_audio_regression.py` to recreate with system FFmpeg and `espeak`; see test report for simulated energy measurements. They do **not** measure the actual neural model output. For genuine validation, install on Android Chrome, open that video, choose Audio → Remove music → Quick → Process, compare voice against original, repeat with Best, and play the exported 720p MP4 locally and in WhatsApp. Also test **No audio** and verify the MP4 has no audio track using a media inspector or FFprobe on a desktop. For installation, check the home-screen icon, splash and Share-to-HalalFrame. Report CPU/memory and any console errors.
 
-```bash
-python tests/v14-ui.test.py
-```
+**GitHub Pages upgrade:** Upload everything, not only the modified files, over v1.4 and commit. The service worker uses `?v=1.5` and network-first shell fetch. After deployment, visit `https://adhkarlyaus.github.io/halalframe/?v=1.5`; if an installed app has old icons, reinstall its home-screen icon. No access to the GitHub account is assumed and this ZIP is not live until the user deploys it.
 
-The DOM UI tests mount the real v1.4 markup, CSS and first-run controller on an isolated Chromium document with a mocked localStorage and AI initializer. They are **not the same as testing the live Android app**. The share-target test executes the real service worker's POST handler against mock IndexedDB rather than a real Android share-sheet registration. Read `tests/TEST_REPORT.md`.
+Read `tests/TEST_REPORT.md` for exact Pass/Simulation/Not Verified distinctions.
 
-## Retained file structure
 
-`index.html`, `css/styles.css`, `js/main.js`, `js/state.js`, `js/engine/{ai,render,tracker,segmentation,export,ffmpeg-worker}.js`, `js/ui/{canvas-input,timeline,first-run,share-target}.js`, `sw.js`, `manifest.json`, `assets/`, `tests/`, `README.md`.
+## Exact changed-file inventory versus v1.4
 
-The previously verified time-based concealment system, moving keyframes, model-assisted tracking, conservative lost-track fallback, local segmentation, offline model caching, photo export and MP4 export logic are preserved. **This software cannot guarantee detection of every impermissible frame. Always review the complete edited file before sharing.**
+**Modified (11):**
+`README.md`, `assets/icon-192.png`, `assets/icon-512.png`, `css/styles.css`, `index.html`, `js/engine/export.js`, `js/main.js`, `js/state.js`, `manifest.json`, `sw.js`, `tests/TEST_REPORT.md`.
+
+**Added (24):**
+`assets/apple-touch-icon.png`, `assets/favicon-32.png`, `assets/icon-128.png`, `assets/icon-256.png`, `assets/icon-384.png`, `assets/icon-48.png`, `assets/icon-72.png`, `assets/icon-96.png`, `assets/icon-maskable-512.png`, `assets/screenshot-audio.png`, `assets/screenshot-editor.png`, `assets/screenshot-welcome.png`, `js/audio/dsp.js`, `js/audio/models.js`, `js/audio/music-worker.js`, `js/ui/audio-panel.js`, `tests/regression/make_audio_regression.py`, `tests/regression/music-reference.wav`, `tests/regression/speech-music-mix.wav`, `tests/regression/speech-music-regression-10s.mp4`, `tests/regression/speech-reference.wav`, `tests/regression/speech-source.wav`, `tests/regression/v15-audio.test.mjs`, `tests/regression/v15-release.test.mjs`.
+
+**Removed:** None. The original `assets/logo.png`, tracking, segmentation and timeline implementation were not modified.
