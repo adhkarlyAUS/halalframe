@@ -1,18 +1,45 @@
-# HalalFrame v1.5 — An Adhkarly Product
+# HalalFrame v1.5.1 — An Adhkarly Product
 
-**Status:** Static, installable PWA **test build**, upgraded in place from v1.4. Browser-simulated regression checks passed; **real ONNX inference, real cleaned-audio quality, Android installation and end-to-end MP4 AAC playback have not yet been verified on hardware**. Do not describe a video as guaranteed free of awrah or music. **No account, backend, server media upload, paid API or API key.** Input photos, video and audio are processed on the user's device. Initial JavaScript/WASM/ONNX model downloads require internet access; only the weights and code, not user media, are fetched from third-party CDNs.
+**Status:** Targeted audio hotfix of the live, user-tested v1.5 PWA. The user confirmed that **Quick ONNX actually runs on Chrome when the worker message is delayed**, along with measured music attenuation; these v1.5.1 startup and Maximum refinements were unit-tested locally, **not yet retested against the real models on Android**. End-to-end cleaned MP4 playback was not re-verified in this build. Do not describe a video as guaranteed free of awrah or music. **No account, backend, server media upload, paid API or API key.** Input photos, video and audio are processed on the user's device. Initial JavaScript/WASM/ONNX model downloads require internet access; only the weights and code, not user media, are fetched from third-party CDNs.
 
 Keep the approved `assets/logo.png` and Adhkarly purple ownership signature. Credits: **Developed by FD Abu Ishaq and Muzzy.** Special thanks to Mustapha (Muzzy) are preserved from v1.4.
+
+## v1.5.1 audio hotfix — targeted changes only
+
+- **Worker startup handshake:** `js/audio/music-worker.js` registers `self.onmessage` synchronously and announces `{type:'ready',version:'1.5.1'}` immediately; `models.js` and `dsp.js` now load lazily after the first process request. `js/ui/audio-panel.js` waits for the ready event **before** transferring buffers, fixing the first-run lost-message race.
+- **Never hang without feedback:** both worker startup and processing have a **30-second inactivity watchdog**, reset on worker progress and delegate notifications, with explicit failure messages, `worker.onerror`, `worker.onmessageerror`, and full cleanup on Cancel. The timer protects against hangs; on very slow hardware an otherwise valid model initialization without progress for 30 s may need a retry.
+- **Maximum-only tonal cleanup:** after the existing MDX vocal separation and speech gate, an extra overlapping STFT pass learns persistent narrow instrumental frequencies from the **music-only** portions of the original recording, then attenuates matching peaks in the vocal stem during speech. Music-only segments stay muted. This can weaken speech frequencies where they overlap music; **always listen to the cleaned result**. Where the source has no reliable music-only reference, the separate vocal track is retained without pretending a stronger filter ran.
+- **Best stays distinct:** Quick uses pinned `UVR_MDXNET_9482.onnx` (**29,704,436 bytes**); Best uses the pinned, larger `UVR-MDX-NET-Voc_FT.onnx` (**66,762,490 bytes**). The selected model name/size is reported to the worker progress display. Both checksums and the model URLs are **unchanged**; the existing `halalframe-audio-models-v1.5` browser cache is intentionally reused so users do not need another large download.
+- Only the HTML release version/cache-busting has changed outside the audio code. **No changes to detection, video tracking, MP4 export, installed PWA branding, or saved projects.**
+
+**User-reported real v1.5 Quick-model findings before the hotfix:** 40% speech detection, non-speech music intervals nearly silent, speech RMS 0.144 → 0.127, under-speech attenuation at 131 Hz: −17 dB; 262 Hz: −13 dB; 330 Hz: −5 dB; 392 Hz: −5.5 dB. The new Maximum refinement is not yet measured with this real model. Do not treat synthetic energy improvements as a prediction of results on arbitrary music.
+
+**Hotfix tests (from the extracted ZIP):**
+
+```bash
+node tests/regression/v151-worker-handshake.test.mjs
+node tests/regression/v151-audio-hotfix.test.mjs
+node tests/regression/v15-audio.test.mjs
+node tests/regression/v15-release.test.mjs
+```
+
+### Android acceptance for v1.5.1
+
+1. Commit the replacement files to the GitHub Pages repository root; open `https://adhkarlyaus.github.io/halalframe/?v=1.5.1` and confirm the footer says **v1.5.1** (no worker hang).
+2. Use the user's 10 s speech/music test with Quick + Strong. On first click, expect **worker ready → model download/cache → VAD → separate → cleaned preview** without needing to wait or retry the click. Cancellation and errors must produce visible feedback.
+3. Retry **Quick + Maximum**. Listen for residual music under speech and compare intelligibility; the four-tone regression is included only as a **simulation**, not proof of real-world separation.
+4. Choose **Best**, verify the UI says **Best · MDX-Net Voc FT** and the download/cache status describes the ~66.8 MB model. Run it on sufficient-memory hardware; test AAC export with the cleaned track, and verify the output in Android Gallery/WhatsApp.
+5. Disconnect internet after models are cached and repeat processing to verify offline use. If the worker stalls without any progress for 30 seconds, it should report a recoverable error rather than leave a spinning Cancel button forever.
 
 ## How to run and publish free
 
 1. Extract the ZIP. The folder contents must be served from a web root, with `index.html`, `css/`, `js/`, `assets/`, `manifest.json`, and `sw.js` together. Do **not** upload a containing folder one level deeper.
 2. For desktop local testing: `python3 -m http.server 8080` inside the extracted folder, then visit `http://localhost:8080`. Direct `file://` opening displays a helpful message instead of running module scripts.
-3. For a free public HTTPS app: create/use `https://github.com/adhkarlyaus/halalframe`, upload and overwrite all extracted files into the **repository root**, commit to `main`, then in **Settings → Pages → Deploy from branch → main / (root)**. Open `https://adhkarlyaus.github.io/halalframe/?v=1.5` after GitHub Pages finishes.
+3. For a free public HTTPS app: create/use `https://github.com/adhkarlyaus/halalframe`, upload and overwrite all extracted files into the **repository root**, commit to `main`, then in **Settings → Pages → Deploy from branch → main / (root)**. Open `https://adhkarlyaus.github.io/halalframe/?v=1.5.1` after GitHub Pages finishes.
 4. On Android Chrome use **Install app** in the footer / About, or Chrome's menu → **Install app**. Existing installed PWAs may need a fresh installation if Android delays refreshing their manifest/icons. On iPhone use Safari → Share → Add to Home Screen. On standalone launch the charcoal HalalFrame splash still displays.
 5. Do a hard refresh if an older document is still open. Versioned imports and the network-first service worker are carried forward from v1.3/v1.4. Old shell caches are removed while downloaded MediaPipe weights remain available offline.
 
-## v1.5 changes — same v1.4 tracking and segmentation engines
+## v1.5 changes — carried forward unchanged from v1.4 tracking and segmentation engines
 
 ### Person outline by default
 
@@ -51,7 +78,7 @@ All models are fetched directly by the Worker only after the user presses **Down
 
 ### Audio pipeline detail
 
-`js/audio/music-worker.js` (ES module worker) loads `onnxruntime-web@1.22.0`, negotiates WebGPU→WASM, verifies and caches weights, resamples source audio to 16 kHz for Silero VAD, runs speech scoring, applies a padded/smoothed time gate, and resamples stereo to 44.1 kHz for MDX-Net STFT. Quick: `4096`-point FFT, `[1,4,2048,256]` input; Best: `6144`-point FFT, `[1,4,3072,256]` input. Outputs are inverse-STFT'd, crossfaded, filtered to detected speech, and handed back as transferable buffers. `js/audio/dsp.js` implements the STFT/iSTFT and resampling. Worker cancellation terminates model operations; no server execution.
+`js/audio/music-worker.js` (ES module worker) starts with a synchronous ready handshake, then loads `onnxruntime-web@1.22.0`, negotiates WebGPU→WASM, verifies and caches weights, resamples source audio to 16 kHz for Silero VAD, runs speech scoring, applies a padded/smoothed time gate, and resamples stereo to 44.1 kHz for MDX-Net STFT. Quick: `4096`-point FFT, `[1,4,2048,256]` input; Best: `6144`-point FFT, `[1,4,3072,256]` input. Outputs are inverse-STFT'd, crossfaded, filtered to detected speech, and handed back as transferable buffers. `js/audio/dsp.js` implements the STFT/iSTFT and resampling. Worker cancellation terminates model operations; no server execution.
 
 The visual display is not coupled to cleaning progress, and the original photo/video remains on-device. Videos are not modified in their source file. In the optional cleaned export mode the AAC encoder uses **cleaned PCM**, not original audio. On unsupported AAC WebCodecs it may fall back to local FFmpeg with a **cleaned WAV** input; if that fails, it must error rather than leak original music.
 
