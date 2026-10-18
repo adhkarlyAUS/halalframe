@@ -1,67 +1,83 @@
-# HalalFrame v1.8 — Full-head concealment & release polish
+# HalalFrame v1.9 — Sequential Export & Phone Video Compatibility
 
-This is a **targeted update of the live-tested v1.7 codebase**, not a rebuild. HalalFrame is a static, free, on-device photo/video editor. No videos or photos are uploaded to the developer's server. MediaPipe and audio models download from external pinned hosts on first use, and the local PWA caches supported assets.
+HalalFrame remains a **100% free**, **static**, **on-device** editor by Adhkarly. No accounts, no upload backend, no paid APIs, and no server processing of your media. The previously verified v1.8 on-device tracking, person outline segmentation, splash/onboarding, YAMNet verification, MDX/HTDemucs and Pixelate/Blur are preserved. This is a focused export/compatibility release.
 
-**Safety:** AI cannot prove that every pixel of awrah, a person, or music has been removed. Review **every frame and the actual exported file** before sharing. The audio **No audio** option is safest when no music or audio must remain. HalalFrame provides editing tools, not religious rulings.
+**Safety:** AI is imperfect; no exported video can be certified to contain no visible awrah or music. Review the **entire exported file** before sharing. Use **No audio** to remove all sound. HalalFrame does not issue religious rulings.
 
-## Free update of the existing GitHub Pages app
+## Publish on GitHub Pages
 
-1. Extract `HalalFrame_v1.8_Full_Build.zip`.
-2. Upload **the contents of the extracted folder** into the existing GitHub repository root: https://github.com/adhkarlyaus/halalframe. Replace matching files and commit to `main`.
-3. Once GitHub Pages deploys, open https://adhkarlyaus.github.io/halalframe/?v=1.8 on Android Chrome. Reload once if necessary. Your old public deployment is not changed until you upload the files.
-4. On desktop, you may also run `python3 -m http.server 8000` from the extracted folder. Opening `index.html` with `file://` is not sufficient for ES modules, service workers and AI.
+1. Download and extract `HalalFrame_v1.9_Sequential_Export.zip`.
+2. Upload the **contents** of the folder to https://github.com/adhkarlyaus/halalframe (repository root); overwrite matching files, commit to `main`.
+3. Once deployment finishes, open https://adhkarlyaus.github.io/halalframe/?v=1.9 . Versioned CSS, modules and service worker update automatically. The current live site will remain on the last deployed version until you do this.
+4. To develop locally, run `python3 -m http.server 8000` from this folder and open `http://localhost:8000/` (not `file://`, which cannot load ES modules and service workers reliably).
 
-## Changes from v1.7
+## What changed
 
-### Precise full-head concealment
+### Export — no per-frame seeking
 
-- For outline masks, **preview and export both use `concealmentRect()`**, which includes additional space above the pose detector's highest landmark. Without this, the cap could be cut off even if the mask included hair.
-- `headBoundsFromPose()` uses nose, eyes, ears and shoulder landmarks to form a generous cap over the selected person's entire hair/face/head, extending above the eyes and sideways beyond ears. If landmarks are incomplete, it uses a selected-target-only conservative top cap. The body-mask coverage threshold is checked **before** adding the head cap, so a missing torso still triggers a full selected-box fallback.
-- `unionHeadRegion()` applies that cap to the **selected person's mask**. The selfie multiclass `hair=1` label is also used on every third analysed frame **within the selected head neighbourhood only**, never as an all-person whole-frame mask.
-- Cap, precise instance mask, safety margin and explicit exclusions are combined. v1.7's immediate release of other people when separated is retained, and precision-critical masks still do **not** blend stale previous-frame pixels.
-- **Tradeoff:** The cap is conservative and may conceal a little background near the selected person's head, especially with partial/missing landmarks. Real-model hair coverage remains to be tested on Android. No computer-vision guarantee of zero exposed pixels is possible.
+- **New** `js/engine/media-probe.js` imports **mp4box@2.4.1** from a pinned jsDelivr URL and reads MP4/MOV metadata locally. Provides codec, approximate bit depth, audio codec, source dimensions, reported fps/duration and tkhd rotation. Tests `VideoDecoder.isConfigSupported` at import.
+- **New** `js/engine/sequential-decoder.js` extracts compressed samples incrementally with MP4Box, then feeds them **in DTS order** to WebCodecs `VideoDecoder`, which outputs display frames. Compressed samples and decoded `VideoFrame`s are released. Frame PTS are carried to the export timestamps, keeping VFR timing (in Original fps mode). There is **no video.currentTime seek inside the primary export frame loop**. Progressive queue limits reduce memory use but **cannot guarantee** 3-minute mobile export without exhausting memory.
+- `js/engine/export.js` uses the existing shared `renderFrame()` and `MaskCache` for every decoded frame, followed by WebCodecs video encoder and pinned **mp4-muxer@5.2.2** or **webm-muxer@5.1.4**. WhatsApp output uses MP4 fast-start with H.264 and AAC when supported. Output timestamps use source presentation timestamps; the fps setting may drop excess frames, not repeat source frame seeks. Hardware acceleration is requested but never presumed.
+- **New** `js/engine/sequential-analysis.js` supplies the **same sequential stream** to Find All People and forward Track analysis. **Backward tracking and user scrub** still use the browser's native seek, with an 18–22s timeout/retry; neither is part of the main export loop.
+- If browser WebCodecs is unavailable, the app attempts **realtime** video playback into `canvas.captureStream` + `MediaRecorder`, followed by `ffmpeg.wasm` conversion/remux to MP4. If that conversion fails, the UI will clearly identify WebM as a non-WhatsApp fallback. Recording at 1× speed cannot offer an accelerated export.
 
-### Mobile onboarding
+### Phone formats / conversion
 
-- At viewport widths **below 600px**, Step 2 shows all three Tap → Track → Export illustrations **stacked vertically** with each image about **124px wide** and its readable label. No horizontal swipe needed. Desktop layout is unchanged.
-- `tap-person.svg` is redrawn using **one head-and-shoulders silhouette** and a touch **finger/hand with a ripple**, rather than a mouse cursor or extra limbs. Reduced-motion preferences still stop its animation.
+At import, the app inspects MP4/MOV tracks and checks `VideoDecoder.isConfigSupported`. If unsupported, a card offers **Convert for editing** and **Copy diagnostic info**. Diagnostics include container, codec string, bit-depth estimate, dimensions, fps, duration, orientation, browser, WebCodecs availability, error code and cause.
 
-### Update notice
+- **New** `js/engine/conversion.js`: explicit local `ffmpeg.wasm` single-thread H.264, 8-bit, 30 fps conversion. For HDR it **tries** an FFmpeg zscale/tonemap filter, then a simple 8-bit fallback (which can change HDR colour). **Important:** the official FFmpeg.wasm core may lack HEVC, HDR tone-map filters or suitable encoders, or may exhaust phone RAM. Such files can therefore still fail. In those cases the app says to use a phone compatibility/H.264 export or desktop converter. This is **not** an unconditional browser HEVC compatibility guarantee.
+- MP4Box handles `.mp4`, `.m4v`, and `.mov`; `.webm` and other containers use a separate realtime fallback, not the MP4 demuxer. MOV rotation and VFR behavior still require real-device testing.
+- Some browser build combinations support HEVC, others cannot decode it. HEVC HDR/Dolby Vision tone mapping requires validation and may not preserve metadata/colours.
 
-- The **Update ready** banner is shown only when a **newer service worker really is waiting**. It is hidden on startup, controller takeover and reload; an already running latest release does not display a stale notification. The existing network-first shell and cache-first model assets continue unchanged. `APP_VERSION` is **1.8**; all module/stylesheet URLs inherit its cache-busting suffix.
+### Export controls
 
-### Stricter music check
+| Preset | Picture | FPS cap | Target video bitrate | Audio target | Guidance |
+|---|---|---|---|---|---|
+| WhatsApp (default) | 720p shorter side, keep orientation | 30 | 1.8 Mbps | AAC 96 kbps stereo | Widest compatibility, fast-start MP4 |
+| Small | 540p | 30 | 900 kbps | AAC 64 kbps | Lower size |
+| Tiny | 360p | 24 | 450 kbps | AAC 48 kbps mono | Strong compression |
+| HD | 1080p | 30 | 5 Mbps | AAC 128 kbps | Higher quality |
+| Original | Source dimensions | Source or selected | Adaptive | AAC 128 kbps | May be large |
+| Fit under N MB | 720p | 30 | Calculated after reserving audio | AAC 96 kbps | Estimate, **not guaranteed limit** |
 
-- YAMNet now differentiates **red** likely music from **amber** weak/moderate music or instrument-like detections, especially **under speech**. Neither red nor amber can be called “Music check passed.” Green only means **no segments were flagged at the configured thresholds**, not music-free certification.
-- The report explicitly names the **actual separation model used**: Quick MDX-Net 9482, Best MDX-Net Voc FT, or Studio HTDemucs v4. If Studio fell back to Best, the displayed model says Best. It also lists Gentle/Strong/Maximum strength.
-- No music separation model, audio encoder, gate or DSP was changed in this version; the user's live-tested v1.7 Quick/Studio functionality is preserved.
+Codec advanced options: H.264 MP4 by default; optional H.265 MP4 (newer compatible phones), VP9 WebM, AV1 WebM (do **not** label these WhatsApp compatible). Frame rate: 24/30/original; audio bitrate, mono/stereo and quality/speed settings. Unsupported video encoders are disabled using `VideoEncoder.isConfigSupported`. Estimated file sizes are estimates only, not predictions of exact size.
 
-## Tests
+### Audio controls
 
-Run:
+The Audio tab includes **Tips for best results**, **Mute all red/amber parts** from the YAMNet strip, and **Mute this section** with editable start/end time. Fades prevent clicks. Muted sections feed the exported **modified PCM**, so they are not merely a preview effect. Songs with singing can remain in the vocal stem: select **No audio** or manually mute those sections. If the audio cannot be encoded, the app must not substitute unmodified original music behind a “cleaned” label.
 
-```sh
-node tests/regression/v18-head.test.mjs
-node tests/regression/v18-maskcache.test.mjs
-node tests/regression/v18-music.test.mjs
-node tests/regression/v18-update.test.mjs
-node tests/regression/v18-release.test.mjs
-node tests/regression/tracker.test.mjs
-node tests/regression/v17-precision.test.mjs
-python3 tests/v18-ui.py
-```
+### Compatibility library pins
 
-The `v18-maskcache.test.mjs` check additionally exercises the actual `MaskCache.compute()` method with simulated MediaPipe outputs at 3, 6.5, 7.5 and 9 seconds, confirming every defined head ROI pixel is concealed and no separated cameraman-only pixel is masked.
+- `mp4box@2.4.1`, BSD-3-Clause: `https://cdn.jsdelivr.net/npm/mp4box@2.4.1/dist/mp4box.all.mjs`
+- `mp4-muxer@5.2.2`: `https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.mjs`
+- `webm-muxer@5.1.4`: `https://cdn.jsdelivr.net/npm/webm-muxer@5.1.4/build/webm-muxer.mjs`
+- Existing pinned `@ffmpeg/ffmpeg@0.12.15`, `@ffmpeg/core@0.12.10` and `@ffmpeg/util@0.12.2` remain.
+- The service worker loads versioned application files **network-first** and caches codec modules after first use. Large model/wasm files remain cache-first once downloaded.
 
-The generated head test uses **synthetic pose landmarks** calibrated to the provided `astronaut-360.png` fixture, against the 300-frame two-person crossing geometry: the known image's **hair/forehead/eyes ROI** must be **100% masked**. It also checks zero altered mask pixels in the cameraman-only region after separation. **This is not real PoseLandmarker model inference or exported H.264 pixel analysis**. The audio check uses a **mock YAMNet classifier** to test amber/green logic and verifies the model-attribution code. The update test simulates waiting/active worker states. The mobile page test is run with embedded CSS and assets in Chromium because the test environment blocks navigation to a hosted origin.
+## Reproduce the export test matrix
 
-Full outcomes and remaining device checks: `tests/TEST_REPORT.md`. Exact change inventory: `CHANGED_FILES_v1.8.md`.
+1. `bash tests/make_v19_fixtures.sh` generates all five synthetic input types (requires native FFmpeg including libx265).
+2. `node tests/regression/v19-sequential.test.mjs` checks the app's sequential export/preset path, source orientation and import diagnostics.
+3. `python3 tests/v19_matrix_cli.py` converts the sample fixtures via **native system FFmpeg** and writes `tests/v19-cli-benchmarks.json` + test MP4s. These results only show sample validity/compatibility when transcoded with native FFmpeg; they are **NOT** results of running the browser app or proof of WhatsApp compatibility.
+4. On Chrome Android, upload each fixture, confirm VideoDecoder support/Convert handling, export WhatsApp preset, record actual elapsed time, compare masked preview to output and inspect audio; play it in Gallery and send through WhatsApp. Repeat 3-minute input on a midrange device while monitoring memory.
 
-## Live Android acceptance checklist
+See `tests/TEST_REPORT.md` for the five-row status matrix and honest validation notes; `CHANGED_FILES_v1.9.md` lists the precise changes against v1.8. Historical release tests with explicit `APP_VERSION=1.8` expectations are preserved as historical and will not pass by design against v1.9; use the v1.9 regression check instead.
 
-1. Test `tests/regression/two-person-crossing-10s.mp4`. Tap the **astronaut**, Track →, select Person outline + Pixelate; inspect **3, 6.5, 7.5 and 9 s**, paying particular attention to the hair, forehead and eyes. Check that the cameraman remains clean when separated. Inspect the **downloaded MP4**, not only the editor preview.
-2. Open the first-run flow in a clean/incognito browser context. At **390px** width, confirm all three steps are visible at once, and the Tap art is a single human silhouette plus a hand/touch ripple. Avoid clearing site storage if you need to keep saved projects.
-3. After deploying and reloading v1.8, confirm the **Update ready** banner does not persist. If a future version actually remains waiting, check that the banner is displayed only then.
-4. Run Quick Maximum or Studio with the known music clip. Confirm the risk strip shows **amber** if residual instrument-like YAMNet detections are above the conservative threshold beneath speech, and that the report names the model actually used. Listen before sharing; choose No audio if uncertain.
+## Known limitations
 
-No server, account, backend or API keys were added.
+- **Not yet verified end-to-end with real WebCodecs/MP4Box in Chrome Android**. The runtime executing this build blocked hosted-browser integration tests. Native FFmpeg benchmarks are a **different implementation**.
+- **No guaranteed realtime-speed export**: per-frame seeking is removed but CPU masks, model segmentation, encoder support and GPU allocation may remain slower than source duration, especially on phones.
+- HEVC Main10, Dolby Vision, portrait rotation, long GOP and VFR output require Android acceptance testing.
+- `ffmpeg.wasm` is no-cost but slow and memory-heavy. Its codec/filter capabilities vary; conversion is best-effort, not assured.
+- The audio decoder may not support particular MOV tracks, and AAC `AudioEncoder` support varies. The app can attempt a slower FFmpeg audio-copy fallback; inspect exported audio for your device.
+- Cache-busting uses APP_VERSION **1.9**. Existing v1.8 user edits remain local; no media leaves the tab.
+
+## Android acceptance checklist
+
+- Open `https://adhkarlyaus.github.io/halalframe/?v=1.9` **only after publishing**; confirm version label **1.9**.
+- Export 30 s long-GOP H.264 at WhatsApp quality: no “Seeking this video timed out”, inspect output frames/audio/latency.
+- Test HEVC portrait and HDR and, if unsupported, the conversion warning. Do not assume that `ffmpeg.wasm` supports HEVC.
+- Test rotated MOV/VFR with a clear visual orientation landmark; check source/output orientation and audio sync.
+- Export the 3-minute video and monitor memory; report if Chrome tab reloads.
+- Use the audio tab's red/amber mute tool and manual mute section, then confirm **the actual exported MP4** contains the edit.
+- If anything fails, tap **Copy diagnostic info** and share the text/error code for a targeted hotfix.

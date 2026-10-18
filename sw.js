@@ -4,7 +4,7 @@
 const VERSION=new URL(self.location.href).searchParams.get('v')||'unversioned';
 const SHELL=`halalframe-shell-v${VERSION}`,AI='halalframe-ai-v1.1',AUDIO='halalframe-audio-models-v1.5';
 const ROOT=new URL('./',self.location.href);
-const SHELL_FILES=['./','index.html','manifest.json','css/styles.css','js/main.js','js/state.js','js/engine/ai.js','js/engine/render.js','js/engine/segmentation.js','js/engine/export.js','js/engine/ffmpeg-worker.js','js/engine/tracker.js','js/engine/identity.js','js/ui/canvas-input.js','js/ui/timeline.js','js/ui/first-run.js','js/ui/share-target.js','js/ui/audio-panel.js','js/audio/models.js','js/audio/dsp.js','js/audio/music-worker.js','js/audio/music-check.js','assets/logo.png','assets/logo-transparent.png',...['tap-person','track-person','export-video','privacy-shield'].map(n=>`assets/onboarding/${n}.svg`),'assets/icon-192.png','assets/icon-512.png','assets/test-person.jpg','assets/favicon-32.png','assets/apple-touch-icon.png','assets/icon-maskable-512.png',...['48','72','96','128','256','384'].map(n=>`assets/icon-${n}.png`),...['welcome','editor','audio'].map(n=>`assets/screenshot-${n}.png`)];
+const SHELL_FILES=['./','index.html','manifest.json','css/styles.css','js/main.js','js/state.js','js/engine/ai.js','js/engine/render.js','js/engine/segmentation.js','js/engine/export.js','js/engine/ffmpeg-worker.js','js/engine/tracker.js','js/engine/identity.js','js/engine/media-probe.js','js/engine/sequential-decoder.js','js/engine/sequential-analysis.js','js/engine/conversion.js','js/ui/canvas-input.js','js/ui/timeline.js','js/ui/first-run.js','js/ui/share-target.js','js/ui/audio-panel.js','js/audio/models.js','js/audio/dsp.js','js/audio/music-worker.js','js/audio/music-check.js','assets/logo.png','assets/logo-transparent.png',...['tap-person','track-person','export-video','privacy-shield'].map(n=>`assets/onboarding/${n}.svg`),'assets/icon-192.png','assets/icon-512.png','assets/test-person.jpg','assets/favicon-32.png','assets/apple-touch-icon.png','assets/icon-maskable-512.png',...['48','72','96','128','256','384'].map(n=>`assets/icon-${n}.png`),...['welcome','editor','audio'].map(n=>`assets/screenshot-${n}.png`)];
 const PACKAGE='https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304';
 const AI_FILES=[`${PACKAGE}/vision_bundle.mjs`,...['vision_wasm_internal.js','vision_wasm_internal.wasm','vision_wasm_nosimd_internal.js','vision_wasm_nosimd_internal.wasm'].map(x=>`${PACKAGE}/wasm/${x}`),'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite','https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float32/1/efficientdet_lite0.tflite','https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite','https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task','https://storage.googleapis.com/mediapipe-models/image_embedder/mobilenet_v3_small/float32/1/mobilenet_v3_small.tflite'];
 // Optional audio weights are downloaded only after the user requests cleaning.
@@ -17,6 +17,7 @@ const ORT_RUNTIME='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
 const TASKS_AUDIO='https://cdn.jsdelivr.net/npm/@mediapipe/tasks-audio@0.10.22-rc.20250304';
 const YAMNET='https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite';
 const MUSIC_CHECK_ASSETS=[YAMNET,`${TASKS_AUDIO}/audio_bundle.mjs`,...['audio_wasm_internal.js','audio_wasm_internal.wasm','audio_wasm_nosimd_internal.js','audio_wasm_nosimd_internal.wasm'].map(n=>`${TASKS_AUDIO}/wasm/${n}`)];
+const CODEC_ASSETS=['https://cdn.jsdelivr.net/npm/mp4box@2.4.1/dist/mp4box.all.mjs','https://cdn.jsdelivr.net/npm/webm-muxer@5.1.4/build/webm-muxer.mjs','https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.mjs'];
 const DEMUCS_MODEL='https://huggingface.co/timcsy/demucs-web-onnx/resolve/92e33df/htdemucs_embedded.onnx';
 const versioned=path=>new URL(path+( /\.(?:js|css|json)$/.test(path)?`?v=${VERSION}`:''),ROOT);
 self.addEventListener('install',e=>e.waitUntil((async()=>{
@@ -96,7 +97,8 @@ self.addEventListener('fetch',e=>{
   if(url.origin==='https://cdn.jsdelivr.net'&&url.pathname.includes('onnxruntime-web@1.22.0/dist/')){
     e.respondWith(aiResponse(e.request,true,AUDIO));return;
   }
-  if(AI_FILES.includes(e.request.url)){
+  if(CODEC_ASSETS.includes(e.request.url)){e.respondWith(aiResponse(e.request,true,AI));return;}
+  if(AI_FILES.includes(e.request.url)){ 
     const bigAsset=/\.(?:wasm|tflite)$/.test(url.pathname);
     e.respondWith(aiResponse(e.request,bigAsset));
   }

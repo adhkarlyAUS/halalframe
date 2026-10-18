@@ -3,18 +3,18 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#17191b"><meta name="description" content="HalalFrame by Adhkarly — private, on-device video concealment editor.">
-<title>HalalFrame v1.8 — An Adhkarly Product</title>
+<title>HalalFrame v1.9 — An Adhkarly Product</title>
 <style>.splash-screen{position:fixed;inset:0;z-index:220;background:#111416;color:#f6f7f3;display:flex;align-items:center;justify-content:center}.splash-content{width:min(600px,90%);text-align:center}.splash-logo{width:min(100%,480px)}.splash-screen.hidden{display:none!important}</style>
-<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=1.8">
-<link rel="icon" href="assets/favicon-32.png?v=1.8" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=1.9">
+<link rel="icon" href="assets/favicon-32.png?v=1.9" type="image/png" sizes="32x32">
 <script>
 // The ONE release constant: CSS, manifest, entry module, transitive imports and
 // service-worker registration all derive their cache-busting URLs from here.
-const APP_VERSION='1.8';window.APP_VERSION=APP_VERSION;
+const APP_VERSION='1.9';window.APP_VERSION=APP_VERSION;
 (function bootstrapVersionedAssets(){
   const paths=['js/main.js','js/state.js','js/engine/ai.js','js/engine/render.js',
     'js/engine/segmentation.js','js/engine/export.js','js/engine/ffmpeg-worker.js',
-    'js/engine/tracker.js','js/engine/identity.js','js/ui/canvas-input.js','js/ui/timeline.js','js/ui/first-run.js','js/ui/share-target.js',
+    'js/engine/tracker.js','js/engine/identity.js','js/engine/media-probe.js','js/engine/sequential-decoder.js','js/engine/sequential-analysis.js','js/engine/conversion.js','js/ui/canvas-input.js','js/ui/timeline.js','js/ui/first-run.js','js/ui/share-target.js',
     'js/ui/audio-panel.js','js/audio/models.js','js/audio/music-check.js','js/audio/dsp.js','js/audio/music-worker.js'];
   const imports={};
   for(const path of paths)imports[new URL(path,document.baseURI).href]=new URL(`${path}?v=${APP_VERSION}`,document.baseURI).href;
@@ -63,6 +63,14 @@ const APP_VERSION='1.8';window.APP_VERSION=APP_VERSION;
   <div class="head-right"><span class="privacy-pill"><span class="pulse"></span> ON YOUR DEVICE</span><span id="offline-status" class="offline-status">AI first download required</span><button id="help-btn" class="icon-btn" title="How it works" aria-label="Help">?</button></div>
 </div></header>
 <main class="wrap">
+<div id="codec-warning" class="codec-warning hidden" role="alert" aria-live="polite">
+  <div class="eyebrow lime">VIDEO COMPATIBILITY</div><h3>Browser cannot decode this video</h3>
+  <p id="codec-warning-message">This HEVC/HDR video needs conversion to edit in Chrome.</p>
+  <p class="hint">Convert for editing? Everything stays on your device. Large iPhone/Android clips may require a computer if this phone lacks enough memory or the FFmpeg core lacks HEVC support.</p>
+  <div class="audio-buttons"><button type="button" class="btn primary" id="convert-file">Convert locally to H.264</button><button type="button" class="btn outline" id="copy-codec-diagnostic">Copy diagnostic info</button></div>
+  <p id="codec-warning-error" class="hint"></p>
+</div>
+
   <section class="intro"><div class="eyebrow">FREE · PRIVATE · NO SIGN-IN</div><h1>Conceal with precision.</h1><p>Mask people and selected regions at specific moments — and keep your media on your device.</p></section>
   <section class="upload-card" id="upload-panel">
     <div class="upload-content"><div class="upload-icon">↥</div><div><h2>Start with a photo or video</h2><p>Choose a local MP4, WebM, MOV, JPG, PNG or WebP file.</p></div></div>
@@ -113,7 +121,21 @@ const APP_VERSION='1.8';window.APP_VERSION=APP_VERSION;
             <option value="clean">Remove music, keep speech (AI)</option>
           </select></label>
           <p class="hint" id="audio-summary">Original sound is kept.</p>
-          <div id="audio-clean-settings" class="audio-clean-settings hidden">
+          <details class="audio-tips"><summary>Tips for best results</summary><div class="hint">
+<p>• Separation works best when the voice is louder than the music. Constant loud music is harder to remove.</p>
+<p>• On a phone, use Quick or Best. On a laptop, Studio usually gives more separation at the cost of a large download.</p>
+<p>• Nasheeds containing drums/instruments: try Maximum + Strict, then inspect the music-check report.</p>
+<p>• <strong>Songs with singing:</strong> AI may keep sung vocals because they are human voices. Use <strong>No audio</strong> or manually mute those sections.</p>
+<p>• Echo, reverb and noisy recordings reduce precision. Listen to Original/Cleaned with headphones; amber/red sections always require review.</p>
+</div></details>
+<div class="audio-mute-tools">
+  <strong>Manual mute timeline</strong>
+  <p class="hint">Position the video playhead, choose start and end, and mute that portion of the soundtrack.</p>
+  <div class="two-cols"><label class="field">Start (s)<input id="audio-mute-start" type="number" min="0" step="0.1" value="0"></label><label class="field">End (s)<input id="audio-mute-end" type="number" min="0" step="0.1" value="3"></label></div>
+  <div class="audio-buttons"><button type="button" id="audio-add-mute" class="btn subtle small">Mute this section</button><button type="button" id="audio-clear-mutes" class="btn outline small">Clear mutes</button></div>
+  <p id="audio-manual-mutes" class="dim tiny">No muted sections selected.</p>
+</div>
+<div id="audio-clean-settings" class="audio-clean-settings hidden">
             <div class="audio-warning"><strong>Important</strong> · No AI removes 100% of music in every recording. Listen to the entire result before sharing. <strong>No audio</strong> is the safest option.</div>
             <label class="field">Quality<select id="audio-quality"><option value="quick">Quick · ~30 MB · lower memory</option><option value="best">Best · ~67 MB · slower, more memory</option><option value="studio">Studio (experimental) · Demucs v4 · ~181 MB · desktop</option></select></label>
             <label class="field" for="audio-strength">Music suppression <strong id="audio-strength-label">Strong</strong></label><input id="audio-strength" type="range" min="0" max="2" step="1" value="1" aria-label="Music suppression strength: Gentle, Strong or Maximum"><div class="strength-marks" aria-hidden="true"><span>Gentle</span><span>Strong</span><span>Maximum</span></div>
@@ -125,7 +147,7 @@ const APP_VERSION='1.8';window.APP_VERSION=APP_VERSION;
             <div id="audio-progress-wrap" class="audio-progress-wrap hidden"><div class="progress-track"><div id="audio-progress" class="progress-fill"></div></div><p id="audio-progress-text" class="hint" aria-live="polite">Ready</p></div>
             <div id="audio-backend" class="dim tiny">WebGPU preferred · WASM fallback</div>
             <div id="music-report" class="music-report hidden" aria-live="polite"><strong>Music check · original vs processed</strong><p id="music-report-description">Independent verification pending.</p>
-              <div class="music-report-strip" id="music-report-strip"></div>
+              <div class="music-report-strip" id="music-report-strip"></div><button type="button" id="audio-mute-risk" class="btn secondary small">Mute all red/amber parts</button>
               <div class="music-report-key"><span><i class="speech"></i> Speech / low risk</span><span><i class="removed"></i> Music removed</span><span><i class="risk"></i> Likely music</span><span><i class="caution"></i> Possible instruments · review</span></div>
               <p class="hint">YAMNet scores are estimates, not a guarantee. If red or amber remains, listen and review carefully; choose No audio if unsure.</p></div>
             <div class="audio-preview-control"><strong>A / B preview · 5 seconds from the playhead</strong><div class="audio-buttons"><button id="audio-preview-original" class="btn subtle small" type="button">▶ Original</button><button id="audio-preview-clean" class="btn secondary small" type="button" disabled>▶ Cleaned</button><button id="audio-preview-stop" class="btn subtle small" type="button" disabled>■ Stop</button></div><div class="hint" id="audio-preview-status">Pause the video, then compare a section.</div></div>
@@ -137,11 +159,28 @@ const APP_VERSION='1.8';window.APP_VERSION=APP_VERSION;
           <div class="debug-only hidden" id="self-check-tools"><div class="dim tiny" id="model-test-status">Self-check: not run yet.</div><button class="text-btn" id="run-self-check">Run AI self-check</button></div>
           <div id="photo-export" class="hidden"><div class="two-cols"><button id="jpg-export" class="btn primary">Save JPG</button><button id="png-export" class="btn secondary">Save PNG</button></div></div>
           <div id="video-export" class="export-box hidden">
-            <label class="field">Quality &amp; size<select id="export-preset"><option value="720">Smart export · 720p (recommended)</option><option value="1080">1080p · HD</option><option value="original">Original resolution</option></select></label>
-            <div id="export-estimate" class="dim tiny" aria-live="polite">Select a video to see the estimated size.</div><div id="export-audio-summary" class="audio-export-summary">Audio: Original</div>
+            <label class="field">Share-ready quality<select id="export-preset">
+  <option value="whatsapp" selected>WhatsApp · H.264 · 720p · recommended</option>
+  <option value="small">Small · 540p · 900 kbps</option>
+  <option value="tiny">Tiny · 360p · 450 kbps</option>
+  <option value="hd">HD · 1080p · 5 Mbps</option>
+  <option value="original">Original resolution</option>
+  <option value="fit">Fit under a file size</option>
+</select></label>
+<label class="field hidden" id="export-target-wrap">Fit under <span class="dim">(MB)</span><input id="export-target-mb" type="number" min="1" max="1024" value="16" step="1"></label>
+<details id="export-advanced" class="export-advanced"><summary>Advanced export options</summary>
+ <div class="two-cols"><label class="field">Codec<select id="export-codec"><option value="h264">H.264 MP4 · WhatsApp-safe</option><option value="hevc">H.265 / HEVC MP4 · newer phones</option><option value="vp9">VP9 WebM · not WhatsApp</option><option value="av1">AV1 WebM · not WhatsApp</option></select></label>
+ <label class="field">Frame rate<select id="export-fps"><option value="preset">Preset (24/30 fps)</option><option value="24">24 fps</option><option value="30">30 fps</option><option value="original">Original / VFR</option></select></label></div>
+ <div class="two-cols"><label class="field">Audio bitrate<select id="export-audio-bitrate"><option value="auto">Preset</option><option value="48000">48 kbps</option><option value="64000">64 kbps</option><option value="96000">96 kbps</option><option value="128000">128 kbps</option></select></label>
+ <label class="field">Channels<select id="export-channels"><option value="stereo">Stereo</option><option value="mono">Mono · smaller</option></select></label></div>
+ <label class="field">Quality vs speed<select id="export-speed"><option value="balanced">Balanced · recommended</option><option value="fast">Fast · prioritise encoding speed</option><option value="quality">Higher quality · slower, bigger file</option></select></label>
+ <p class="hint">H.264 MP4 is the widest-compatible option. HEVC/AV1/VP9 may not play or share in WhatsApp.</p>
+</details>
+<div id="export-estimate" class="dim tiny" aria-live="polite">Select a video to see the estimated size.</div><div id="export-audio-summary" class="audio-export-summary">Audio: Original</div>
             <button id="mp4-export" class="btn primary block">Export MP4</button>
+            <div id="export-error" class="export-error hidden" role="alert"><strong id="export-error-title">Export issue</strong><p id="export-error-copy"></p><p class="dim tiny" id="export-error-code"></p><button id="copy-export-diagnostic" type="button" class="btn outline small">Copy diagnostic info</button></div>
             <div id="export-result" class="export-result hidden"><strong id="export-result-title">Export complete</strong><p class="hint" id="export-result-message"></p><div class="two-cols"><button id="download-video" class="btn secondary">Download</button><button id="share-video" class="btn secondary">Share</button></div></div>
-            <p class="hint">H.264 + AAC where supported. MP4/audio fallback downloads FFmpeg (~32 MB). Never share without reviewing every frame.</p>
+            <p class="hint">Sequential hardware decoding — no frame-by-frame seeking. H.264/AAC MP4 defaults to fast-start for WhatsApp. FFmpeg fallback may download ~32 MB. Review the entire output before sharing.</p>
           </div>
         </div>
       </aside>
@@ -149,7 +188,7 @@ const APP_VERSION='1.8';window.APP_VERSION=APP_VERSION;
   </section>
   <section class="discover-card"><div class="discover-label">ALSO FROM OUR DEVELOPERS</div><div class="discover-wordmark"><span>adhkar</span><span class="discover-ly">ly</span></div><p>Daily adhkar, Qur'an, du'as and Islamic learning — built by the Adhkarly team.</p><div class="discover-actions"><button class="btn subtle" disabled title="App link not configured">Android · Coming soon</button><button class="btn subtle" disabled title="App link not configured">iPhone · Coming soon</button><button class="btn subtle" disabled title="App link not configured">Web · Coming soon</button></div></section>
   <section class="about-grid"><article class="info-card"><h3>Private by design</h3><p>Your photo or video remains in your browser tab. No accounts, servers, API keys or uploaded media. AI models must download once before detection works.</p></article><article class="info-card"><h3>Before you share</h3><p>AI can miss a person, a frame or exposed awrah. Review everything manually. Nothing in this app guarantees religious compliance.</p><button id="ruling-open" class="text-btn">Read the reminder ↗</button></article></section>
-  <footer class="footer"><div>HALALFRAME v1.8 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p class="footer-credit">Developed by Adhkarly Team</p><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · <button id="install-app" class="text-btn">Install app</button> · <button id="footer-disclaimer" class="text-btn">View disclaimer again</button> · <button id="footer-social-help" class="text-btn">Social media help</button></p></footer>
+  <footer class="footer"><div>HALALFRAME v1.9 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p class="footer-credit">Developed by Adhkarly Team</p><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · <button id="install-app" class="text-btn">Install app</button> · <button id="footer-disclaimer" class="text-btn">View disclaimer again</button> · <button id="footer-social-help" class="text-btn">Social media help</button></p></footer>
 </main>
 <div id="update-banner" class="update-banner hidden" role="status" aria-live="polite">
   <span>Update ready — tap to reload</span><button type="button" id="update-reload" class="btn primary small">Reload</button>
