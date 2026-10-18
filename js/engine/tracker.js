@@ -131,10 +131,47 @@ export function stableBox(previous,measurement,dt,measurements=[],{uncertain=fal
   const result=boundBox({x:clamp(c.x-w/2,0,Math.max(0,1-w)),y:clamp(c.y-h/2,0,Math.max(0,1-h)),w,h});
   return uncertain?unionBoxes(result,predictBox(previous,velocity,dt)):result;
 }
-function conservativeGap(last,velocity,delta){
-  // During temporary loss, cover BOTH the previous and the predicted location.
-  const predicted=predictBox(last,velocity,delta);
-  return unionBoxes(last,predicted);
+// A loss must never remove a person's region from a frame. The area stays
+// anchored at the last reliable detection, grows at 10% per second (max 2×),
+// and also covers the predicted motion path. Growth is computed from the
+// reliable anchor, not from last frame's larger fallback (no runaway growth).
+export function conservativeGap(anchor,velocity,elapsed){
+  const time=Math.abs(elapsed),growth=Math.min(2,1+0.10*time);
+  const c=center(anchor),w=Math.min(1,anchor.w*growth),h=Math.min(1,anchor.h*growth);
+  const grown=boundBox({x:clamp(c.x-w/2,0,Math.max(0,1-w)),y:clamp(c.y-h/2,0,Math.max(0,1-h)),w,h});
+  const predicted=predictBox(anchor,velocity,elapsed);
+  return unionBoxes(grown,predicted);
+}
+
+// First try predicted-position matching, then (only after a tracking loss)
+// search the whole image for a sufficiently similar-sized reappearance.
+// This is deliberately conservative and cannot guarantee identity in crowds.
+export function reacquirePerson(anchor,candidates,velocity,delta,{lostFor=0}={}){
+  const match=matchPerson(anchor,candidates,velocity,delta);
+  if(match)return {...match,reacquired:false};
+  if(lostFor<.15||!candidates?.length)return null;
+  const pred=predictBox(anchor,velocity,delta),expected=center(pred);
+  const candidatesBySize=candidates.filter(b=>{
+    if((b.confidence??0)<MIN_CONTINUATION_CONFIDENCE)return false;
+    const ratio=(b.w*b.h)/Math.max(EPS,anchor.w*anchor.h);
+    const wRatio=b.w/Math.max(EPS,anchor.w),hRatio=b.h/Math.max(EPS,anchor.h);
+    return ratio>.38&&ratio<2.8&&wRatio>.48&&wRatio<1.9&&hRatio>.48&&hRatio<1.9;
+  }).map(box=>{
+    const p=center(box),distance=Math.hypot(p.x-expected.x,p.y-expected.y);
+    const predictedDistanceScore=Math.exp(-distance/Math.max(.10,Math.hypot(anchor.w,anchor.h)*1.3));
+    const sizeScore=Math.exp(-Math.abs(Math.log((box.w*box.h)/Math.max(EPS,anchor.w*anchor.h))));
+    return {box,score:.5*sizeScore+.5*predictedDistanceScore,distance};
+  }).sort((a,b)=>b.score-a.score);
+  if(!candidatesBySize.length)return null;
+  const top=candidatesBySize[0];
+  // If two candidates look similarly plausible, ask rather than silently swap.
+  if(candidatesBySize.length>1&&top.score-candidatesBySize[1].score<.10)return null;
+  // Grow the global search radius while a subject is missing. This keeps
+  // searching after the initial 1.5 s bridge window; crowded/ambiguous
+  // candidates still fail the separate second-best match safeguard.
+  const maxDistance=Math.min(1.45,Math.max(.35,Math.hypot(anchor.w,anchor.h)*1.65)+Math.min(.85,lostFor*.14));
+  if(top.distance>maxDistance||top.score<.37)return null;
+  return {...top,confidence:Math.max(.51,Math.min(.82,top.score)),reacquired:true,ambiguous:false};
 }
 
 export async function trackDirection({video,project,concealment,ai,direction=1,checkEvery=0,accuracy='best',onProgress=()=>{},onReview=async()=>({action:'continue'}),onFrame=()=>{},signal}){
@@ -145,7 +182,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
   const prior=direction>0?ordered.at(-2):ordered[1];
   if(!last)throw new Error('Select a person or draw a region first');
   let velocity=prior?velocityBetween(prior,last):{x:0,y:0};
-  let measuredLast=last,measuredPrior=prior||null;
+  let measuredLast=last,measuredPrior=prior||null, reliableLast=last;
   const start=last.t,end=direction>0?project.video.duration:0;
   const fps=analysisFPS(project,accuracy),step=1/fps;
   let missedFor=0,weakFor=0,ambiguousFor=0,nextPeriodic=Math.abs(start)+(checkEvery||Infinity);
@@ -161,9 +198,10 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       await seekFrame(video,at,{signal});
       const detections=await ai.detect(video,at,project.video.fps);
       const signedDT=at-measuredLast.t;
-      const match=matchPerson(measuredLast,detections,velocity,signedDT);
+      const match=reacquirePerson(measuredLast,detections,velocity,signedDT,{lostFor:Math.abs(at-measuredLast.t)});
       const dt=Math.abs(at-lastProcessedTime);
       lastProcessedTime=at;
+      const hadLoss=missedFor>step*.75;
       const weak=!!match&&match.confidence<.50;
       weakFor=weak?weakFor+dt:0;
       missedFor=match?0:missedFor+dt;
@@ -180,7 +218,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       if(reason){
         lastReviewTime=at;nextPeriodic=(direction>0?at:start+(start-at))+(checkEvery||Infinity);
         onFrame(at,detections);
-        const review=await onReview({time:at,reason,detections,proposed:match?.box||conservativeGap(last,velocity,at-last.t),direction});
+        const review=await onReview({time:at,reason,detections,proposed:match?.box||conservativeGap(reliableLast,velocity,at-reliableLast.t),direction});
         if(signal?.aborted)throw new DOMException('Tracking cancelled','AbortError');
         if(review.action==='end'){
           if(direction>0)concealment.endTime=at;else concealment.startTime=at;
@@ -190,7 +228,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
           addPoint(concealment,at,review.box,'manual',1);
           measuredPrior=measuredLast;measuredLast={...review.box,t:at};
           velocity=measuredPrior?velocityBetween(measuredPrior,measuredLast):{x:0,y:0};
-          last={...review.box,t:at};centreFilter.reset(review.box,at);historySizes.push(last);
+          last={...review.box,t:at};reliableLast=last;centreFilter.reset(review.box,at);historySizes.push(last);
           missedFor=weakFor=ambiguousFor=0;
           if(direction>0)concealment.endTime=Math.max(concealment.endTime,at);else concealment.startTime=Math.min(concealment.startTime,at);
           onProgress(Math.abs((at-start)/(end-start||1)),at);continue;
@@ -199,7 +237,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
           // Preserve a conservative mask through the skipped interval.
           for(let skipped=1;skipped<=Math.ceil(.8*fps);skipped++){
             const t=clamp(at+direction*skipped*step,0,Math.max(0,project.video.duration-.002));
-            addPoint(concealment,t,conservativeGap(last,velocity,t-last.t),'ai',0);
+            addPoint(concealment,t,conservativeGap(reliableLast,velocity,t-reliableLast.t),'ai',0);
             if(direction>0)concealment.endTime=Math.max(concealment.endTime,t);else concealment.startTime=Math.min(concealment.startTime,t);
           }
           i+=Math.ceil(.8*fps);missedFor=weakFor=ambiguousFor=0;continue;
@@ -212,14 +250,18 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       if(match){
         const uncertain=match.confidence<.48||match.box.w<last.w*.85||match.box.h<last.h*.85;
         sizeAnchor.w=Math.max(sizeAnchor.w,match.box.w);sizeAnchor.h=Math.max(sizeAnchor.h,match.box.h);
+        // After a loss restart the filter at the newly observed subject rather
+        // than smoothing the inflated safety box into the recovered detection.
+        if(hadLoss)centreFilter.reset(match.box,at);
         const filtered=moveCentre(match.box,centreFilter.update(match.box,at));
-        result=stableBox(last,filtered,dt,historySizes,{uncertain,velocity,anchor:sizeAnchor});
+        result=stableBox(reliableLast,filtered,Math.abs(at-reliableLast.t),historySizes,{uncertain,velocity,anchor:sizeAnchor});
         confidence=match.confidence;
         measuredPrior=measuredLast;measuredLast={...match.box,t:at};
+        reliableLast={...result,t:at};
         velocity=measuredPrior?velocityBetween(measuredPrior,measuredLast):velocity;
         historySizes.push(match.box);if(historySizes.length>12)historySizes.shift();
       }else{
-        result=conservativeGap(last,velocity,at-last.t);
+        result=conservativeGap(reliableLast,velocity,at-reliableLast.t);
       }
       addPoint(concealment,at,result,'ai',confidence);
       last={...result,t:at};
@@ -237,7 +279,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
 
 function predictedTrack(tr,t){return predictBox(tr.last,tr.velocity||{x:0,y:0},t-tr.lastT);}
 function makeTrack(box,t,id,source,fps){
-  return {id:`person-${id}`,label:`Person ${id}`,thumbnail:personThumbnail(source,box),track:[{t,...box,source:'ai'}],last:box,lastT:t,lastObserved:box,lastObservedT:t,velocity:{x:0,y:0},observations:1,firstT:t,sizeHistory:[box],sizeAnchor:{w:box.w,h:box.h},fps,centreFilter:new OneEuroCentre(box,t)};
+  return {id:`person-${id}`,label:`Person ${id}`,thumbnail:personThumbnail(source,box),track:[{t,...box,source:'ai'}],last:box,lastT:t,lastObserved:box,lastObservedT:t,velocity:{x:0,y:0},observations:1,observedTimes:[t],firstT:t,sizeHistory:[box],sizeAnchor:{w:box.w,h:box.h},fps,centreFilter:new OneEuroCentre(box,t)};
 }
 function fillGap(tr,t,box,confidence){
   const prev=tr.track.at(-1);
@@ -251,11 +293,15 @@ function fillGap(tr,t,box,confidence){
     const alpha=i/(n+1),bt=prev.t+alpha*dt;
     const ib={};for(const k of ['x','y','w','h'])ib[k]=prev[k]+(box[k]-prev[k])*alpha;
     const w=Math.max(ib.w,Math.min(prev.w,box.w)*.98),h=Math.max(ib.h,Math.min(prev.h,box.h)*.98);
-    const c=center(ib);addPoint(tr,bt,boundBox({x:c.x-w/2,y:c.y-h/2,w,h}),'ai',confidence*.65);
+    const c=center(ib);let gapBox=boundBox({x:c.x-w/2,y:c.y-h/2,w,h});
+    const existing=tr.track.find(p=>Math.abs(p.t-bt)<1/(tr.fps*3));
+    if(existing&&existing.confidence===0)gapBox=unionBoxes(gapBox,existing);
+    addPoint(tr,bt,gapBox,'ai',confidence*.65);
   }
 }
 function appendObservation(tr,box,t){
   const prev=tr.lastObserved,dt=t-tr.lastObservedT;
+  if(dt>MAX_BRIDGE_SECONDS)(tr.reviewGaps??=[]).push({from:tr.lastObservedT,to:t});
   const previousSized=tr.last;
   const uncertain=box.w<previousSized.w*.85||box.h<previousSized.h*.85;
   tr.sizeAnchor.w=Math.max(tr.sizeAnchor.w,box.w);tr.sizeAnchor.h=Math.max(tr.sizeAnchor.h,box.h);
@@ -265,7 +311,7 @@ function appendObservation(tr,box,t){
   addPoint(tr,t,output,'ai',box.confidence??.4);
   tr.velocity=velocityBetween({...prev,t:tr.lastObservedT},{...box,t});
   tr.lastObserved=box;tr.lastObservedT=t;tr.last=output;tr.lastT=t;
-  tr.observations++;
+  tr.observations++;tr.observedTimes.push(t);tr.longGapMarked=false;
   tr.sizeHistory.push(box);if(tr.sizeHistory.length>12)tr.sizeHistory.shift();
 }
 function linkedAcrossGap(a,b,maxGap=MAX_MERGE_SECONDS){
@@ -289,7 +335,7 @@ function mergeTracks(tracks){
       fillGap(a,start.t,start,Math.min(end.confidence||.5,start.confidence||.5));
       for(const pt of b.track)addPoint(a,pt.t,pt,pt.source,pt.confidence);
       a.last=b.last;a.lastT=b.lastT;a.lastObserved=b.lastObserved;a.lastObservedT=b.lastObservedT;a.velocity=b.velocity;
-      a.observations+=b.observations;
+      a.observations+=b.observations;a.observedTimes.push(...b.observedTimes);
       arr.splice(j,1);j=i;
     }
   }
@@ -308,10 +354,14 @@ export async function findAllPeople({video,project,ai,accuracy='best',onProgress
       await seekFrame(video,t,{signal});
       // Detector accepts confidence >=0.18; only new tracks require 0.35.
       const boxes=await ai.detect(video,t,project.video.fps);
-      const active=tracks.filter(tr=>t-tr.lastObservedT<=MAX_BRIDGE_SECONDS);
+      // Keep *every* previously seen person eligible for re-acquisition.
+      // A 1.5 s bridge window only governs review warnings, not lifetime.
+      // Otherwise a longer disappearance creates a new Person and leaves
+      // a safety mask frozen until the end of the clip.
+      const active=tracks;
       const associations=[];
       for(const tr of active)for(let b=0;b<boxes.length;b++){
-        const m=matchPerson(tr.lastObserved,[boxes[b]],tr.velocity,t-tr.lastObservedT);
+        const m=reacquirePerson(tr.lastObserved,[boxes[b]],tr.velocity,t-tr.lastObservedT,{lostFor:t-tr.lastObservedT});
         if(m)associations.push({tr,index:b,score:m.score});
       }
       associations.sort((a,b)=>b.score-a.score);
@@ -319,6 +369,17 @@ export async function findAllPeople({video,project,ai,accuracy='best',onProgress
       for(const a of associations){
         if(usedTracks.has(a.tr)||usedBoxes.has(a.index))continue;
         appendObservation(a.tr,boxes[a.index],t);usedTracks.add(a.tr);usedBoxes.add(a.index);
+      }
+      // Account for every moment without a detection: keep a growing,
+      // prediction-aware mask until a person reappears or the video ends.
+      for(const tr of active){
+        if(usedTracks.has(tr))continue;
+        const elapsed=t-tr.lastObservedT;
+        if(elapsed>=MAX_BRIDGE_SECONDS&&!tr.longGapMarked){
+          (tr.reviewGaps??=[]).push({from:tr.lastObservedT,to:t});tr.longGapMarked=true;
+        }
+        const mask=conservativeGap({...tr.last,t:tr.lastObservedT},tr.velocity,elapsed);
+        addPoint(tr,t,mask,'ai',0);
       }
       for(let b=0;b<boxes.length;b++){
         if(usedBoxes.has(b)||boxes[b].confidence<NEW_PERSON_CONFIDENCE)continue;
@@ -341,9 +402,26 @@ export async function findAllPeople({video,project,ai,accuracy='best',onProgress
     // that boundary. This covers short detector misses at opening/closing frames.
     if(tr.firstT<=MAX_BRIDGE_SECONDS&&tr.firstT>0){
       const first=tr.track[0];addPoint(tr,0,first,'ai',0);}
-    if(project.video.duration-tr.lastT<=MAX_BRIDGE_SECONDS){
-      const last=tr.track.at(-1);addPoint(tr,project.video.duration,last,'ai',0);}
+    // Missing detections must not silently end a concealment. Only an explicit
+    // user End Here / drag handle can shorten its end time.
+    if(tr.lastT<project.video.duration){
+      const missing=project.video.duration-tr.lastObservedT;
+      const last=conservativeGap({...tr.last,t:tr.lastObservedT},tr.velocity,missing);
+      addPoint(tr,project.video.duration,last,'ai',0);
+    }
     tr.track.sort((a,b)=>a.t-b.t);
+    tr.observedTimes.sort((a,b)=>a-b);
+    for(let i=1;i<tr.observedTimes.length;i++){
+      if(tr.observedTimes[i]-tr.observedTimes[i-1]>MAX_BRIDGE_SECONDS)
+        (tr.reviewGaps??=[]).push({from:tr.observedTimes[i-1],to:tr.observedTimes[i]});
+    }
+    // Record extended periods covered only by the speculative safety box.
+    let lostStart=null,lostEnd=null;
+    for(const p of tr.track){
+      if(p.confidence===0){if(lostStart===null)lostStart=p.t;lostEnd=p.t;}
+      else if(lostStart!==null){if(lostEnd-lostStart>=MAX_BRIDGE_SECONDS)(tr.reviewGaps??=[]).push({from:lostStart,to:lostEnd});lostStart=null;lostEnd=null;}
+    }
+    if(lostStart!==null&&lostEnd-lostStart>=MAX_BRIDGE_SECONDS)(tr.reviewGaps??=[]).push({from:lostStart,to:lostEnd});
     return {id:`person-${index+1}`,label:`Person ${index+1}`,track:tr.track,thumbnail:tr.thumbnail,
       startTime:tr.track[0].t,endTime:tr.track.at(-1).t,reviewGaps:tr.reviewGaps||[]};
   });
