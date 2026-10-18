@@ -1,59 +1,58 @@
-# HalalFrame v1.2 — Regression & Verification Report
+# HalalFrame v1.3 — Test Report
 
-Date: 18 October 2026. This is an in-place v1.1 patch, **not** a new rewrite.
+Date: 2026-10-18. Source: existing v1.2 editor; targeted updates only.
 
-## Exact reproduction media
+## Verification status
 
-- `tests/regression/astronaut-motion-10s.mp4`
-- Source: `skimage.data.astronaut()`, resized to a 380×380 image, placed over grey 1280×720 canvas at `x=t*92`, `y=200` with FFmpeg.
-- 30 fps, 10 seconds, 300 frames, H.264 video, AAC 440 Hz mono audio.
-- **Input media validation: PASSED.** OpenCV decoded all 300 frames; content moved along the expected path; FFprobe confirmed codecs and dimensions; FFT of decoded AAC audio measured 440.0 Hz.
-- This validates the **original regression input**, **not** HalalFrame's actual export.
-
-## Functional regressions
-
-| Area | Status | Evidence / limitation |
+| Check | Result | Evidence / limitations |
 |---|---|---|
-| v1.0 Test A — time-bounded mask | **Passed — unit test of current state.js** | The actual v1.2 state module enforces 5–8 s visibility; canvas renderer itself is unchanged. |
-| v1.0 Test B — interpolated keyframes | **Passed — unit test of current state.js** | The actual v1.2 `boxAt` interpolates x=0.1 at 2s and x=0.5 at 6s to x=0.3 at 4s. |
-| v1.2 Find All → one person, 0–10 s | **Passed with simulation** | `node --experimental-default-type=module tests/regression/tracker.test.mjs`; clean 30fps synthetic detections produced one track, exactly 0 to 10 seconds, **301 points** and zero uncovered positions against source image rectangle geometry. **Real MediaPipe model output not verified**. |
-| Scan with 1.1 s missing detections | **Passed with simulation** | Single track, missing positions interpolated at <0.08s intervals, zero uncovered rectangle positions. |
-| Scan with 2.3 s detector dropout | **Passed with simulation** | One predicted-trajectory-merged track, marked as needing human review. |
-| Tap at 2 s + Track to end | **Passed with simulation** | Ends at 10 s, **0 prompts** on the clean synthetic detector, tracked rectangle covers modeled source region every 1/30s. Actual MediaPipe tracking **not verified**. |
-| Dropouts/shrinking detector box | **Passed with simulation** | Injected low-confidence partial detections and gaps; full-size region held conservatively; manual Keep going required only once for an introduced >0.5s loss. |
-| End concealment here | **Passed with simulation** | A requested early stop remained at approximately 2.60 s; it did **not** get extended to 10 s. |
-| Self-check hidden outside Debug | **Passed — static source inspection** | `#self-check-tools` hidden initially and is shown only by the Debug toggle. It was not evaluated on a live Android browser. |
-| Tracking accuracy settings | **Passed — source + simulated 10/30 fps logic** | Best 30fps / Fast 10fps for this project; live GPU performance **not verified**. |
-| MP4 export matches preview | **Not verified** | Export engine unchanged from v1.1, but no v1.2 WebCodecs file was produced in this environment. |
-| Exported MP4 contains source AAC tone | **Not verified** | **Source** MP4 contains verified 440Hz AAC; this is not evidence that export preserves audio. |
-| Exported MP4 plays in WhatsApp/Android Gallery | **Not verified** | Requires actual phone sharing/playback test. |
-| PWA offline behavior after v1.2 upgrade | **Not verified** | Shell cache bumped; existing pinned AI asset cache key intentionally preserved to avoid another download. Requires Android validation. |
+| A: mask visible only within specified time range | **Passed with simulation** | Existing baseline `tracker.test.mjs` uses actual data-model functions. |
+| B: keyframe box interpolates | **Passed with simulation** | Existing baseline midpoint interpolation assertion. |
+| Clean astronaut Find All: one 0–10 s identity | **Passed with simulation** | Actual v1.3 tracker module, controlled detections matching source geometry, 301 samples. Owner independently verified the equivalent real-model case on v1.2. |
+| Clean Tap + Track to end | **Passed with simulation** | 0 prompts in clean detector simulation; previous real-model v1.2 owner test passed. |
+| 1-second person disappearance: one identity and no missing mask | **Passed with simulation** | `v13-safety.test.mjs`, 4.5–5.5 s detector dropout, zero-confidence mask points and re-acquisition. It does **not** prove true person visibility/coverage during occlusion. |
+| 3-second disappearance: re-acquire same identity | **Passed with simulation** | Scan remains eligible after 1.5 s; same track detected after 6 s. |
+| Permanent detector loss | **Passed with simulation** | Safety box continues to video end and grows gradually. Actual subject position is unknown during loss. |
+| Default Blur and branded-fill safety | **Passed: static/source and data-model check** | `newConcealment` defaults to Blur; `renderFrame` requires explicit `wholeFrame` for full-frame brand fill. Actual rendered pixels not compared in browser. |
+| Restore consent and Delete/Clear durability | **Passed with simulation** | `v13-release.test.mjs` runs actual IndexedDB wrapper with fake transaction scheduling, and asserts static restore controls. User-device UI not verified. |
+| Versioned CSS, JS, manifest and module imports | **Passed: static/source check** | `APP_VERSION='1.3'` populates import map, entry import, CSS and manifest links. Cannot prove actual Chrome HTTP caching from static inspection. |
+| SW network-first, claim, clean stale shell, preserve AI cache | **Passed with simulation** | `v13-worker.test.mjs` invokes actual SW handlers with mock CacheStorage and network. |
+| Actual Android/PWA v1.2→v1.3 upgrade | **Not verified** | Test on GitHub Pages after deployment; old v1.2 SW may require opening `?v=1.3` once. |
+| Real MediaPipe re-acquisition on disappearance clip | **Not verified** | No real on-device detector run available in this execution environment. |
+| Exported MP4 video/audio, WhatsApp playback | **Not verified** | Export code is unchanged from v1.2; **source** MP4 AAC verification does not prove exported sound. |
 
-## Browser limitation
+## Test commands
 
-The available Chromium test runner blocked navigation to local HTTP, `file://`, and external URLs with `ERR_BLOCKED_BY_ADMINISTRATOR`. The real MediaPipe runtime could not be initialized against the user's live GitHub Pages site, so no genuine model-detection test was possible here. Node simulations directly imported the **actual revised tracker module** and fed the clip's exact known moving-person coordinates, including injected confidence drops and loss periods. Do not describe these tests as successful real-model verification.
+```sh
+node tests/regression/tracker.test.mjs
+node tests/regression/v13-safety.test.mjs
+node tests/regression/v13-release.test.mjs
+node tests/regression/v13-worker.test.mjs
+python tests/regression/verify_media.py
+```
 
-## Device acceptance checklist
+## Regression clip validation
 
-1. Deploy v1.2 and refresh twice in Android Chrome to update the offline service-worker shell. Check visible **v1.2** footer.
-2. Select the bundled regression video. Confirm **Best · every frame** is preselected.
-3. Press **Find all people**. Expected **one person**, `00:00.00–00:10.00`, roughly 300 track points. Inspect that the black region covers the astronaut for the full clip.
-4. Open the same source again, pause at 2 seconds, tap the astronaut and press **Track →**. Expected the track to reach 10 seconds, with **no more than one** unexpected check prompt, and no visible exposed pixels at 1.6, 2.3, 5 and 9 seconds when tracking from the beginning (or 2.3, 5 and 9 seconds when starting at 2 seconds).
-5. If the AI still loses the subject, capture the frame time and detection confidence from Debug, then fix the box; it is **not guaranteed** to be safe without manual review.
-6. Tick the review acknowledgement, export at 720p, play the new MP4 in Android Gallery, confirm the 440 Hz sound, then share with WhatsApp and check playback there.
-7. Try a Fast (10 fps) scan for comparison and confirm no false duplicates.
-8. Confirm `AI ready offline ✓` stays visible after refresh, and test airplane mode. Do not clear site data first.
+- Normal clip: 300 frames, 1280×720, 30fps, 10s, H.264 + AAC, 440Hz audio.
+- Disappearance clip: same geometry/codec and AAC. At t=4.3s astronaut visible, at t=5.0s grey background, at t=5.7s astronaut visible. Its corresponding detector-simulation gap is 4.5–5.5s.
+- A genuine video export and a genuine MediaPipe session were **not** produced during this v1.3 execution.
 
-## Files changed from v1.1
+## Required Android phone acceptance test
 
-- `js/engine/tracker.js` — predicted matching, One-Euro centre smoothing, conservative sizing, continuous gap interpolation, path merging, check cooldown, accuracy modes, end-time fixes.
-- `js/engine/ai.js` — threshold lowered to 0.18; self-check message clarified.
-- `js/main.js` — accuracy connected to tracking and scanning; default selected by clip duration; longer-gap review label; hide self-check details outside Debug.
-- `js/state.js` — version v1.2 and 15% default region padding.
-- `index.html` — version v1.2, accuracy control and Debug-only self-check panel.
-- `sw.js` — shell cache revision v1.2, reuse existing v1.1 model cache.
-- `README.md` — v1.2 behavior, launch notes and testing instructions.
-- `tests/TEST_REPORT.md` — this report.
-- **Added**: `tests/regression/astronaut-380.png`, `tests/regression/astronaut-motion-10s.mp4`, `tests/regression/tracker.test.mjs`, `tests/regression/verify_media.py`.
+1. Deploy v1.3 on the existing GitHub Pages repository. Open `https://adhkarlyaus.github.io/halalframe/?v=1.3` once to bypass any v1.2 cache. Confirm **v1.3** in the footer, and JS requests containing `?v=1.3`.
+2. Load normal astronaut MP4. **Find all people** should return exactly one person over 0–10s, with continuous concealment. Test Tap + Track for zero unexpected prompts.
+3. Load disappearance MP4. Find All should still produce one 0–10s identity. Inspect t=4.49, 5.0, 5.5, 5.8, 8.0; the region must remain present across detection loss and then reacquire. Verify the masked output while the person is visible, not only the tracker dots.
+4. Select a region, change effect to brand and verify it doesn't occupy the entire frame. Select **Intentionally cover entire frame** and verify that deliberate choice. New masks should default to Blur.
+5. Delete a region and reopen the file: confirm the region stays deleted and a Restore/Start fresh prompt appears only when there are actual saved regions. Press Start fresh; reopen to confirm old regions do not return. Test Clear project.
+6. Export the edited video and check the whole file in Android Gallery and WhatsApp, including the 440Hz AAC tone.
+7. Later test a new deployment to ensure the update banner appears and old JS is not served; service-worker mock tests alone cannot establish mobile update reliability.
 
-Unchanged: `css/styles.css`, `js/engine/render.js`, `js/engine/segmentation.js`, `js/engine/export.js`, `js/engine/ffmpeg-worker.js`, `js/ui/timeline.js`, `js/ui/canvas-input.js`, `manifest.json`, `assets/logo.png`, icons, and reference illustration.
+**Safety qualification:** a box that persists during a detection failure is not evidence the person remains fully covered if their position changes unexpectedly. No automatic AI model guarantees that every instance of awrah is concealed. The user must review full exports before sharing.
+
+## Changed files (exact)
+
+Modified: `index.html`, `css/styles.css`, `js/main.js`, `js/state.js`, `js/engine/tracker.js`, `js/engine/render.js`, `sw.js`, `README.md`, `tests/TEST_REPORT.md`.
+
+Added: `tests/regression/astronaut-disappears-1s.mp4`, `tests/regression/v13-safety.test.mjs`, `tests/regression/v13-release.test.mjs`, `tests/regression/v13-worker.test.mjs`.
+
+All other v1.2 files unchanged.
