@@ -786,6 +786,53 @@ $('share-video').onclick=async()=>{
   try{if(!(await shareBlob(exportResult.blob,exportResult.name))){openResultSheet(exportResult,false);$('export-save-message').textContent='Sharing files is not supported in this browser. Tap Save to phone, then share from Gallery/Files.';}}
   catch(e){if(e.name!=='AbortError')toast('Sharing failed: '+e.message);}
 };
+// v1.10 hotfix: restored block accidentally removed (self-check, share intake, firstRun, SW AI warm-up).
+async function runModelSelfCheck(){
+  const status=$('model-test-status');status.textContent='AI self-check: downloading model and testing…';
+  try{const img=new Image();img.src='assets/test-person.jpg';await img.decode();const result=await ai.selfCheck(img);
+    status.textContent=`Self-check: ${result.message} · ${result.delegate}`;
+    warmAI();
+  }catch(e){status.textContent='Model failed to load — check internet for first run. '+e.message;}
+}
+$('run-self-check').onclick=runModelSelfCheck;
+// Share Target accepts files, NOT remote video URLs. The service worker puts
+// shared media in local IndexedDB for the short redirect, and this removes it.
+async function consumeIncomingShare(){
+  const params=new URL(location.href).searchParams;
+  const id=params.get('shared'),error=params.get('share-error');
+  if(!id&&!error)return;
+  try{window.history.replaceState(null,'',location.pathname+location.hash);}catch{}
+  if(error){toast(error==='no-file'?'The app shared a link, not a media file. Use its Save option first.':'Could not receive the shared file. Try Choose a file.');return;}
+  try{
+    const file=await takeSharedFile(id);
+    if(!file){toast('Shared media expired or unavailable. Please share again.');return;}
+    // Some file managers supply no MIME type; infer from its extension.
+    const originalType=file.type||'';
+    const type=/^(video|image)\//.test(originalType)?originalType:({mp4:'video/mp4',mov:'video/quicktime',webm:'video/webm',m4v:'video/mp4',jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',webp:'image/webp',gif:'image/gif'}[file.name.split('.').pop().toLowerCase()]||'');
+    const imported=type===file.type?file:new File([file],file.name,{type,lastModified:file.lastModified});
+    await openFile(imported);
+  }catch(e){console.error('Shared media import',e);toast('Could not open the shared media: '+e.message);}
+}
+const firstRun=initFirstRun({initAI:()=>ai.init(),onAIReady:()=>warmAI(),onReady:()=>{void consumeIncomingShare();}});
+let swRegistration=null,swWarmStarted=false;
+function swMessage(data){return new Promise(resolve=>{
+  if(!navigator.serviceWorker.controller)return resolve(null);
+  const ch=new MessageChannel();ch.port1.onmessage=e=>resolve(e.data);
+  navigator.serviceWorker.controller.postMessage(data,[ch.port2]);
+  setTimeout(()=>resolve(null),15000);
+});}
+async function checkAIReady(){
+  const r=await swMessage({type:'AI_STATUS'});
+  if(r?.ready){$('offline-status').textContent='AI ready offline ✓';$('offline-status').classList.add('ready');}
+  else $('offline-status').textContent=`AI cache ${r?.count||0}/${r?.total||8} files`;
+}
+async function warmAI(){
+  if(!navigator.serviceWorker.controller||swWarmStarted)return;
+  swWarmStarted=true;
+  const channel=new MessageChannel();
+  channel.port1.onmessage=e=>{if(e.data?.done){if(!e.data.ready)swWarmStarted=false;checkAIReady();channel.port1.close();}};
+  navigator.serviceWorker.controller.postMessage({type:'WARM_AI'},[channel.port2]);
+}
 // Only show "Update ready" for a GENUINELY waiting, newer service worker.
 // The old controllerchange/SW_ACTIVATED handler showed a permanent false toast
 // because skipWaiting activates the worker immediately on every deployment.
