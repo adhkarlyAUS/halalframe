@@ -52,7 +52,7 @@ export async function* sequentialVideoFrames(file,{signal,onProgress=()=>{},maxQ
         const sample=samples.shift();
         const timestamp=Math.round(sample.cts*1e6/(sample.timescale||track?.timescale||1000));
         const duration=Math.max(1,Math.round((sample.duration||1)*1e6/(sample.timescale||1000)));
-        const chunk=new EncodedVideoChunk({type:sample.is_rap?'key':'delta',timestamp,duration,data:sample.data});
+        const chunk=new EncodedVideoChunk({type:(sample.is_sync ?? sample.is_rap)?'key':'delta',timestamp,duration,data:sample.data});
         decoder.decode(chunk);frameCount++;
         // Release parsed samples as soon as their bytes have been copied into
         // EncodedVideoChunk; an ISOFile may otherwise retain large sample data.
