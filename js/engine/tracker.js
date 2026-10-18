@@ -1,4 +1,5 @@
 import {addPoint,clamp,normalizedBox} from '../state.js';
+import {canSequentialAnalyse,sequentialSampler} from './sequential-analysis.js';
 import {appearanceSignature,appearanceSimilarity,hungarian,associationCost,MultiObjectAssociator,iou,poseBodySignature,poseSimilarity,rankIdentityCandidates,chooseIdentityCandidate} from './identity.js';
 
 // Analysis resolution is user-selectable; short clips default to every source frame.
@@ -15,16 +16,23 @@ const EPS=1e-8;
 
 export async function seekFrame(video,time,{signal}={}){
   if(signal?.aborted)throw new DOMException('Operation cancelled','AbortError');
-  const target=clamp(time,0,Number.isFinite(video.duration)?Math.max(0,video.duration-0.002):time);
-  if(Math.abs(video.currentTime-target)<0.004 && video.readyState>=2)return;
-  await new Promise((resolve,reject)=>{
+  const target=clamp(time,0,Number.isFinite(video.duration)?Math.max(0,video.duration-.002):time);
+  if(Math.abs(video.currentTime-target)<.004&&video.readyState>=2)return;
+  const attempt=async (at,deadline)=>new Promise((resolve,reject)=>{
     let done=false;
     const end=err=>{if(done)return;done=true;clearTimeout(timer);video.removeEventListener('seeked',ok);video.removeEventListener('error',bad);signal?.removeEventListener('abort',aborted);err?reject(err):resolve();};
-    const ok=()=>end(),bad=()=>end(new Error('Video could not be decoded')),aborted=()=>end(new DOMException('Operation cancelled','AbortError'));
+    const ok=()=>end(),bad=()=>end(new Error('Video decoder reported an error')),aborted=()=>end(new DOMException('Cancelled','AbortError'));
     video.addEventListener('seeked',ok,{once:true});video.addEventListener('error',bad,{once:true});signal?.addEventListener('abort',aborted,{once:true});
-    const timer=setTimeout(()=>end(new Error('Seeking this video timed out')),7500);
-    try{video.currentTime=target;}catch(e){end(e);}
+    const timer=setTimeout(()=>end(new Error('Preview seeking timed out')),deadline);
+    try{video.currentTime=at;if(Math.abs(video.currentTime-at)<.003&&!video.seeking&&video.readyState>=2)end();}catch(e){end(e);}
   });
+  try{await attempt(target,18000);}
+  catch(e){if(e.name==='AbortError')throw e;
+    // Retry once with a small nudge to force a seeked event on players that
+    // suppress same-frame seeks. Sequential export does not call this method.
+    const nudge=clamp(target+.025,0,Number.isFinite(video.duration)?Math.max(0,video.duration-.002):target+.025);
+    try{await attempt(nudge,22000);}catch(second){if(second.name==='AbortError')throw second;throw new Error('Preview seek failed after retry. Try a shorter H.264 MP4 or Convert for editing.');}
+  }
 }
 
 const center=b=>({x:b.x+b.w/2,y:b.y+b.h/2});
@@ -175,9 +183,13 @@ export function reacquirePerson(anchor,candidates,velocity,delta,{lostFor=0}={})
   return {...top,confidence:Math.max(.51,Math.min(.82,top.score)),reacquired:true,ambiguous:false};
 }
 
-export async function trackDirection({video,project,concealment,ai,direction=1,checkEvery=0,accuracy='best',onProgress=()=>{},onReview=async()=>({action:'continue'}),onFrame=()=>{},signal}){
+export async function trackDirection({video,file=null,project,concealment,ai,direction=1,checkEvery=0,accuracy='best',onProgress=()=>{},onReview=async()=>({action:'continue'}),onFrame=()=>{},signal}){
   if(direction!==1&&direction!==-1)throw new Error('Tracking direction must be +1 or -1');
   video.pause();const oldTime=video.currentTime;
+  // Forward tracking uses sequential decode when supported; reverse tracking
+  // keeps the existing seek path (reverse decoding requires a GOP cache).
+  const sampler=direction>0&&canSequentialAnalyse(file)?sequentialSampler(file,project,{signal}):null;
+  let currentSource=video;
   const ordered=[...concealment.track].sort((a,b)=>a.t-b.t);
   let last=direction>0?ordered.at(-1):ordered[0];
   const prior=direction>0?ordered.at(-2):ordered[1];
@@ -193,21 +205,22 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
   const allPeople=new MultiObjectAssociator({threshold:.78});
   let targetIdentity=null;
   try{
-    const initial=await ai.detect(video,start,project.video.fps);
-    const initialized=allPeople.update(video,initial,start);
+    if(sampler)currentSource=await sampler.at(start)||video;
+    const initial=await ai.detect(currentSource,start,project.video.fps);
+    const initialized=allPeople.update(currentSource,initial,start);
     targetIdentity=initialized.sort((a,b)=>iou(b.box,last)-iou(a.box,last))[0]?.id||null;
-    if(!concealment.identitySignature)concealment.identitySignature=appearanceSignature(video,last);
+    if(!concealment.identitySignature)concealment.identitySignature=appearanceSignature(currentSource,last);
     if(!concealment.refEmbedding&&typeof ai.embedPerson==='function'){
-      try{concealment.refEmbedding=await ai.embedPerson(video,last);}catch{concealment.refEmbedding=null;}
+      try{concealment.refEmbedding=await ai.embedPerson(currentSource,last);}catch{concealment.refEmbedding=null;}
     }
     if(!concealment.poseSignature&&typeof ai.poseInstances==='function'){
       try{
-        const poses=await ai.poseInstances(video,start,project.video.fps);
+        const poses=await ai.poseInstances(currentSource,start,project.video.fps);
         const closest=poses.sort((a,b)=>iou(b.box,last)-iou(a.box,last))[0];
         if(closest&&iou(closest.box,last)>.06)concealment.poseSignature=poseBodySignature(closest.landmarks);
       }catch{/* Colour signature and motion remain available. */}
     }
-    if(!concealment.thumbnail&&typeof document!=='undefined')concealment.thumbnail=personThumbnail(video,last);
+    if(!concealment.thumbnail&&typeof document!=='undefined')concealment.thumbnail=personThumbnail(currentSource,last);
   }catch{}
   concealment.precisionCritical=true;
   concealment.otherPeople=[];let crossings=0,lastEmbedTime=-Infinity;
@@ -219,14 +232,15 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       if(signal?.aborted)throw new DOMException('Tracking cancelled','AbortError');
       const at=clamp(start+direction*i*step,0,Math.max(0,project.video.duration-.002));
       if(Math.abs(at-lastProcessedTime)<1e-5)continue;
-      await seekFrame(video,at,{signal});
-      const detections=await ai.detect(video,at,project.video.fps);
+      if(sampler){currentSource=await sampler.at(at)||currentSource;}
+      else{await seekFrame(video,at,{signal});currentSource=video;}
+      const detections=await ai.detect(currentSource,at,project.video.fps);
       const signedDT=at-measuredLast.t;
-      const assignments=allPeople.update(video,detections,at);
+      const assignments=allPeople.update(currentSource,detections,at);
       const assigned=assignments.find(x=>x.id===targetIdentity);
       let match=reacquirePerson(measuredLast,detections,velocity,signedDT,{lostFor:Math.abs(at-measuredLast.t)});
       const expected=predictBox(measuredLast,velocity,signedDT);
-      const ranked=rankIdentityCandidates(video,detections,concealment.identitySignature,expected,ordered[0]);
+      const ranked=rankIdentityCandidates(currentSource,detections,concealment.identitySignature,expected,ordered[0]);
       const identityChoice=chooseIdentityCandidate(ranked,{minimumAppearance:.44,minimumScore:.45});
       if(identityChoice){
         // A good match to the ORIGINAL appearance outranks a stale Kalman box.
@@ -257,7 +271,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       if(crossing)crossings++;
       if(match&&crossing&&concealment.poseSignature&&typeof ai.poseInstances==='function'&&Math.abs(at-lastEmbedTime)>.45){
         try{
-          const poses=await ai.poseInstances(video,at,project.video.fps);
+          const poses=await ai.poseInstances(currentSource,at,project.video.fps);
           const pose=poses.sort((a,b)=>iou(b.box,match.box)-iou(a.box,match.box))[0];
           const ratio=poseBodySignature(pose?.landmarks);
           if(ratio&&poseSimilarity(concealment.poseSignature,ratio)<.67){match.ambiguous=true;match.confidence=Math.min(match.confidence,.40);}
@@ -266,7 +280,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       if(match&&crossing&&concealment.refEmbedding&&typeof ai.embedPerson==='function'&&Math.abs(at-lastEmbedTime)>.45){
         lastEmbedTime=at;
         try{
-          const candidate=await ai.embedPerson(video,match.box);
+          const candidate=await ai.embedPerson(currentSource,match.box);
           if(candidate?.length===concealment.refEmbedding.length){
             const dot=candidate.reduce((n,v,i)=>n+v*concealment.refEmbedding[i],0);
             const a=Math.hypot(...candidate),b=Math.hypot(...concealment.refEmbedding);
@@ -297,7 +311,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       if(reason){
         lastReviewTime=at;nextPeriodic=(direction>0?at:start+(start-at))+(checkEvery||Infinity);
         onFrame(at,detections);
-        const review=await onReview({time:at,reason,detections,proposed:match?.box||conservativeGap(reliableLast,velocity,at-reliableLast.t),direction,expectedThumb:concealment.thumbnail||null,candidateThumb:typeof document!=='undefined'?personThumbnail(video,match?.box||ranked[0]?.box||last):null});
+        const review=await onReview({time:at,reason,detections,proposed:match?.box||conservativeGap(reliableLast,velocity,at-reliableLast.t),direction,expectedThumb:concealment.thumbnail||null,candidateThumb:typeof document!=='undefined'?personThumbnail(currentSource,match?.box||ranked[0]?.box||last):null});
         if(signal?.aborted)throw new DOMException('Tracking cancelled','AbortError');
         if(review.action==='end'){
           if(direction>0)concealment.endTime=at;else concealment.startTime=at;
@@ -362,7 +376,7 @@ export async function trackDirection({video,project,concealment,ai,direction=1,c
       concealment.endTime=project.video.duration;
     }else if(!endedEarly){const firstBox=concealment.track[0];if(firstBox&&firstBox.t>0)addPoint(concealment,0,firstBox,'ai',firstBox.confidence??0);concealment.startTime=0;}
     onProgress(1,end);
-  }finally{if(!signal?.aborted)await seekFrame(video,oldTime).catch(()=>{});}
+  }finally{await sampler?.close();if(!signal?.aborted&&!sampler)await seekFrame(video,oldTime).catch(()=>{});}
   return concealment;
 }
 
@@ -431,8 +445,9 @@ function mergeTracks(tracks){
   return arr;
 }
 
-export async function findAllPeople({video,project,ai,accuracy='best',onProgress=()=>{},signal}){
+export async function findAllPeople({video,file=null,project,ai,accuracy='best',onProgress=()=>{},signal}){
   video.pause();const originalTime=video.currentTime;
+  const sampler=canSequentialAnalyse(file)?sequentialSampler(file,project,{signal}):null;
   const fps=analysisFPS(project,accuracy),dt=1/fps;
   const tracks=[];let scanned=0,nextId=1;
   try{
@@ -440,15 +455,17 @@ export async function findAllPeople({video,project,ai,accuracy='best',onProgress
     for(let frame=0;frame<n;frame++){
       if(signal?.aborted)throw new DOMException('Scan cancelled','AbortError');
       const t=Math.min(project.video.duration-.002,frame*dt);
-      await seekFrame(video,t,{signal});
+      let analysisSource=video;
+      if(sampler){analysisSource=await sampler.at(t);if(!analysisSource)break;}
+      else await seekFrame(video,t,{signal});
       // Detector accepts confidence >=0.18; only new tracks require 0.35.
-      const boxes=await ai.detect(video,t,project.video.fps);
+      const boxes=await ai.detect(analysisSource,t,project.video.fps);
       // Keep *every* previously seen person eligible for re-acquisition.
       // A 1.5 s bridge window only governs review warnings, not lifetime.
       // Otherwise a longer disappearance creates a new Person and leaves
       // a safety mask frozen until the end of the clip.
       const active=tracks;
-      const signatures=boxes.map(box=>appearanceSignature(video,box));
+      const signatures=boxes.map(box=>appearanceSignature(analysisSource,box));
       const matrix=active.map(tr=>boxes.map((box,j)=>{
         const m=reacquirePerson(tr.lastObserved,[box],tr.velocity,t-tr.lastObservedT,{lostFor:t-tr.lastObservedT});
         if(!m)return 10;
@@ -482,12 +499,12 @@ export async function findAllPeople({video,project,ai,accuracy='best',onProgress
           const prediction=predictedTrack(tr,t),p=center(prediction),v=center(boxes[b]);
           return intersectionOverUnion(prediction,boxes[b])>.32||Math.hypot(p.x-v.x,p.y-v.y)<Math.max(.065,Math.hypot(tr.last.w,tr.last.h)*.22);
         });
-        if(!duplicate)tracks.push(makeTrack(boxes[b],t,nextId++,video,fps));
+        if(!duplicate)tracks.push(makeTrack(boxes[b],t,nextId++,analysisSource,fps));
       }
       scanned++;
       if(scanned%4===0){onProgress(clamp((frame+1)/n,0,1),t,tracks.length);await sleep(0);}
     }
-  }finally{if(!signal?.aborted)await seekFrame(video,originalTime).catch(()=>{});}
+  }finally{await sampler?.close();if(!signal?.aborted&&!sampler)await seekFrame(video,originalTime).catch(()=>{});}
   const merged=mergeTracks(tracks).filter(tr=>tr.observations>=3);
   return merged.map((tr,index)=>{
     tr.track.sort((a,b)=>a.t-b.t);

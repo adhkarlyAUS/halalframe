@@ -1,23 +1,47 @@
 import {renderFrame} from './render.js';
 import {seekFrame} from './tracker.js';
+import {sequentialVideoFrames,drawOrientedFrame} from './sequential-decoder.js';
+import {inspectVideoFile,MediaError,supportedEncoderChoices,browserDiagnostics} from './media-probe.js';
 import {activeAt} from '../state.js';
 const MP4_MUXER_URL='https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.mjs';
+const WEBM_MUXER_URL='https://cdn.jsdelivr.net/npm/webm-muxer@5.1.4/build/webm-muxer.mjs';
 const FFMPEG_VERSION='0.12.15';
 const FFMPEG_URL=`https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@${FFMPEG_VERSION}/dist/esm`;
 const CORE_URL='https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
 const UTIL_URL='https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js';
 const delay=()=>new Promise(resolve=>setTimeout(resolve,0));
 const abortIf=(signal)=>{if(signal?.aborted)throw new DOMException('Export cancelled','AbortError');};
-export const outputDimensions=(w,h,preset='720')=>{
-  const limit=preset==='original'?Infinity:preset==='1080'?1080:720;
-  const factor=Math.min(1,limit/Math.max(1,h));
-  let width=Math.max(2,Math.round(w*factor/2)*2),height=Math.max(2,Math.round(h*factor/2)*2);
-  return {width,height};
+export const EXPORT_PRESETS={
+  whatsapp:{label:'WhatsApp',short:720,fps:30,videoBitrate:1800000,audioBitrate:96000,channels:2},
+  small:{label:'Small',short:540,fps:30,videoBitrate:900000,audioBitrate:64000,channels:2},
+  tiny:{label:'Tiny',short:360,fps:24,videoBitrate:450000,audioBitrate:48000,channels:1},
+  hd:{label:'HD',short:1080,fps:30,videoBitrate:5000000,audioBitrate:128000,channels:2},
+  original:{label:'Original',short:Infinity,fps:0,videoBitrate:6000000,audioBitrate:128000,channels:2},
+  fit:{label:'Fit under',short:720,fps:30,videoBitrate:1200000,audioBitrate:96000,channels:2},
+  // Legacy values are accepted for existing project settings.
+  '720':{label:'WhatsApp',short:720,fps:30,videoBitrate:1800000,audioBitrate:96000,channels:2},
+  '1080':{label:'HD',short:1080,fps:30,videoBitrate:5000000,audioBitrate:128000,channels:2}
 };
-export const estimateSize=({width,height,duration,fps},preset='720')=>{
-  const {width:w,height:h}=outputDimensions(width,height,preset);
-  const bitRate=Math.min(8_000_000,Math.max(650_000,Math.round(w*h*Math.min(60,fps||30)*0.085)));
-  return {bitRate,bytes:Math.round(duration*(bitRate+128000)/8),width:w,height:h};
+export const outputDimensions=(w,h,preset='whatsapp')=>{
+  const limit=EXPORT_PRESETS[preset]?.short??720;
+  const shortSide=Math.max(1,Math.min(w,h));
+  const factor=Number.isFinite(limit)?Math.min(1,limit/shortSide):1;
+  return {width:Math.max(2,Math.round(w*factor/2)*2),height:Math.max(2,Math.round(h*factor/2)*2)};
+};
+export const estimateSize=(video,preset='whatsapp',{targetMB=16,codec='h264',fps='preset',audioBitrate=null,audioMode='original'}={})=>{
+  const chosen=EXPORT_PRESETS[preset]||EXPORT_PRESETS.whatsapp;
+  const {width,height}=outputDimensions(video.width,video.height,preset);
+  const frameRate=fps==='original'?Math.min(120,Math.max(1,video.fps||30)):Number(fps)>0?Number(fps):(chosen.fps||Math.min(60,video.fps||30));
+  const audioBps=audioMode==='none'?0:Number(audioBitrate)||chosen.audioBitrate;
+  const duration=Math.max(0,video.duration||0);
+  let bitRate=chosen.videoBitrate;
+  if(preset==='original')bitRate=Math.min(14000000,Math.max(1200000,Math.round(width*height*frameRate*.09)));
+  if(preset==='fit')bitRate=Math.max(250000,Math.floor((Math.max(.25,Number(targetMB)||16)*1024*1024*8/Math.max(1,duration)-audioBps)*.95));
+  // Alternative codecs need less bitrate for similar quality, but are NOT WhatsApp defaults.
+  if(codec==='hevc')bitRate=Math.round(bitRate*.65);
+  if(codec==='vp9'||codec==='av1')bitRate=Math.round(bitRate*.60);
+  return {bitRate,bytes:Math.round(duration*(bitRate+audioBps)/8*1.03),width,height,fps:frameRate,
+    audioBitrate:audioBps,codec,canFit:preset!=='fit'||(duration*(bitRate+audioBps)/8)<=Math.max(.25,Number(targetMB)||16)*1024*1024};
 };
 function blobFromCanvas(canvas,type,quality){return new Promise((res,rej)=>canvas.toBlob(x=>x?res(x):rej(new Error('Failed to encode image')),type,quality));}
 export async function exportPhoto(source,project,{type='image/jpeg',quality=.88,maskCache=null,ai=null}={}){
@@ -46,10 +70,10 @@ async function decodeAudioBuffer(file){
   const ctx=new (window.AudioContext||window.webkitAudioContext)();
   try{return await ctx.decodeAudioData(await file.arrayBuffer());}finally{await ctx.close();}
 }
-async function encodeAudio(muxer,audio,{signal,onProgress=()=>{}}={}){
+async function encodeAudio(muxer,audio,{signal,onProgress=()=>{},bitrate=128000,channelsWanted=2,codec='mp4a.40.2'}={}){
   if(typeof AudioEncoder==='undefined'||typeof AudioData==='undefined')return {ok:false,reason:'AudioEncoder unavailable'};
-  const channels=Math.min(2,audio.numberOfChannels),sampleRate=48000,bitrate=128000;
-  const cfg={codec:'mp4a.40.2',sampleRate,numberOfChannels:channels,bitrate};
+  const channels=Math.min(channelsWanted,audio.numberOfChannels),sampleRate=48000;
+  const cfg={codec,sampleRate,numberOfChannels:channels,bitrate};
   const supported=await AudioEncoder.isConfigSupported(cfg).catch(()=>({supported:false}));
   if(!supported?.supported)return {ok:false,reason:'AAC AudioEncoder unsupported'};
   // Resample to 48 kHz without capturing a microphone or uploading media.
@@ -67,7 +91,10 @@ async function encodeAudio(muxer,audio,{signal,onProgress=()=>{}}={}){
     for(let start=0;start<total;start+=hop){
       abortIf(signal);if(encodeError)throw encodeError;
       const count=Math.min(hop,total-start),planar=new Float32Array(count*channels);
-      for(let ch=0;ch<channels;ch++)planar.set(buffer.getChannelData(ch).subarray(start,start+count),ch*count);
+      for(let ch=0;ch<channels;ch++){
+        if(channels===1&&buffer.numberOfChannels>1){const a=buffer.getChannelData(0),b=buffer.getChannelData(1);for(let k=0;k<count;k++)planar[k]=(a[start+k]+b[start+k])*.5;}
+        else planar.set(buffer.getChannelData(ch).subarray(start,start+count),ch*count);
+      }
       const audioFrame=new AudioData({format:'f32-planar',sampleRate,numberOfFrames:count,numberOfChannels:channels,timestamp:Math.round(start*1e6/sampleRate),data:planar});
       encoder.encode(audioFrame);audioFrame.close();
       while(encoder.encodeQueueSize>12){abortIf(signal);await delay();}
@@ -80,7 +107,7 @@ async function encodeAudio(muxer,audio,{signal,onProgress=()=>{}}={}){
 // Silence-free muxing: when AAC is unavailable, first create a video-only MP4, then
 // use the original compressed audio from the source through single-thread ffmpeg.wasm.
 async function toBlobURL(url,type){const res=await fetch(url);if(!res.ok)throw new Error(`Library download failed (${res.status})`);return URL.createObjectURL(new Blob([await res.blob()],{type}));}
-async function loadFFmpeg(){
+export async function loadFFmpeg(){
   const [{FFmpeg},{fetchFile}]=await Promise.all([import(`${FFMPEG_URL}/index.js`),import(UTIL_URL)]);
   const ffmpeg=new FFmpeg();
   const coreURL=await toBlobURL(`${CORE_URL}/ffmpeg-core.js`,'text/javascript');
@@ -137,80 +164,128 @@ export async function muxOriginalAudio(videoBlob,original,{signal,onStatus=()=>{
     return new Blob([result],{type:'video/mp4'});
   }finally{signal?.removeEventListener('abort',onAbort);ffmpeg.terminate();}
 }
-export async function exportVideo({file,project,maskCache,ai,preset='720',audioMode='original',cleanedAudio=null,signal,onProgress=()=>{},onStatus=()=>{}}){
-  if(!['original','none','clean'].includes(audioMode))throw new Error('Unrecognised audio mode');
-  if(audioMode==='clean'&&!cleanedAudio)throw new Error('Process cleaned audio before exporting.');
+// Sequential WebCodecs export: compressed samples are demuxed once and sent
+// to VideoDecoder in decode order. Unlike v1.8 there is NO per-frame seeking.
+export async function exportVideo({file,project,maskCache,ai,preset='whatsapp',audioMode='original',cleanedAudio=null,
+    codec='h264',fps='preset',audioBitrate=null,channels='stereo',speed='balanced',targetMB=16,signal,
+    onProgress=()=>{},onStatus=()=>{}}){
+  if(!['original','none','clean'].includes(audioMode))throw new MediaError('HF_AUDIO_MODE','Unsupported audio mode');
+  if(audioMode==='clean'&&!cleanedAudio)throw new MediaError('HF_AUDIO_NOT_READY','Process and check cleaned audio before exporting.');
   abortIf(signal);
-  if(typeof VideoEncoder==='undefined'||typeof VideoFrame==='undefined'){
-    return await fallbackVideo({file,project,maskCache,ai,preset,audioMode,cleanedAudio,signal,onProgress,onStatus});
+  const options={file,project,maskCache,ai,preset,audioMode,cleanedAudio,codec,fps,audioBitrate,channels,speed,targetMB,signal,onProgress,onStatus};
+  if(typeof VideoEncoder==='undefined'||typeof VideoDecoder==='undefined'||typeof VideoFrame==='undefined'){
+    onStatus('WebCodecs unavailable; using realtime browser recording…');
+    return fallbackVideo(options);
   }
-  let muxerLibrary;
-  try{muxerLibrary=await import(MP4_MUXER_URL);}catch(e){onStatus('MP4 library unavailable; trying browser recorder.');return fallbackVideo({file,project,maskCache,ai,preset,audioMode,cleanedAudio,signal,onProgress,onStatus});}
-  const {width,height,bitRate}=estimateSize(project.video,preset),fps=preset==='original'?Math.min(60,project.video.fps||30):Math.min(30,project.video.fps||30);
-  const candidates=['avc1.4d002a','avc1.42001f'];
+  const container=(codec==='vp9'||codec==='av1')?'webm':'mp4';
+  const libraryURL=container==='webm'?WEBM_MUXER_URL:MP4_MUXER_URL;
+  let lib;
+  try{lib=await import(libraryURL);}catch(e){
+    if(container==='webm')throw new MediaError('HF_MUXER_LOAD','WebM encoder library could not be downloaded.',{cause:e.message});
+    onStatus('MP4 library unavailable; using realtime recorder.');return fallbackVideo(options);
+  }
+  const choice=estimateSize(project.video,preset,{targetMB,codec,fps,audioBitrate,audioMode});
+  let {width,height,bitRate}=choice;
+  if(speed==='quality')bitRate=Math.round(bitRate*1.18);
+  const codecStrings={h264:['avc1.64002a','avc1.4d002a','avc1.42001f'],hevc:['hvc1.1.6.L123.B0'],vp9:['vp09.00.31.08','vp09.00.10.08'],av1:['av01.0.08M.08']};
+  if(!codecStrings[codec])throw new MediaError('HF_ENCODER_CHOICE','Choose a supported output codec.');
   let cfg=null;
-  for(const codec of candidates){const test={codec,width,height,bitrate:bitRate,framerate:fps,hardwareAcceleration:'prefer-hardware'};
-    if((await VideoEncoder.isConfigSupported(test).catch(()=>({supported:false}))).supported){cfg=test;break;}}
-  if(!cfg){onStatus('H.264 WebCodecs unsupported; using recorder fallback.');return fallbackVideo({file,project,maskCache,ai,preset,audioMode,cleanedAudio,signal,onProgress,onStatus});}
-  const inputAudio=audioMode==='none'?null:audioMode==='clean'?cleanedAudio:await decodeAudioBuffer(file).catch(()=>null);
-  const audioConfig={codec:'mp4a.40.2',sampleRate:48000,numberOfChannels:Math.min(2,inputAudio?.numberOfChannels||2),bitrate:128000};
-  const audioSupported=typeof AudioEncoder!=='undefined'&&(await AudioEncoder.isConfigSupported(audioConfig).catch(()=>({supported:false}))).supported;
-  const audioPossible=!!inputAudio&&audioSupported;
-  const target=new muxerLibrary.ArrayBufferTarget();
-  const opts={target,video:{codec:'avc',width,height,frameRate:fps},fastStart:'in-memory',firstTimestampBehavior:'offset'};
-  if(audioPossible)opts.audio={codec:'aac',numberOfChannels:Math.min(2,inputAudio.numberOfChannels),sampleRate:48000};
-  const muxer=new muxerLibrary.Muxer(opts);
-  let encodeError=null,lock=null,handle=null,encoder=null;
-  const timeStart=performance.now();
-  const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
-  const ctx=canvas.getContext('2d',{alpha:false});
+  for(const id of codecStrings[codec]){
+    const candidate={codec:id,width,height,bitrate:bitRate,framerate:choice.fps,latencyMode:speed==='fast'?'realtime':'quality',hardwareAcceleration:'prefer-hardware'};
+    const check=await VideoEncoder.isConfigSupported(candidate).catch(()=>({supported:false}));
+    if(check?.supported){cfg=candidate;break;}
+  }
+  if(!cfg)throw new MediaError('HF_ENCODER_UNSUPPORTED',`${codec.toUpperCase()} encoding is unsupported at this resolution. Choose H.264 or a lower quality preset.`);
+  const probe=await inspectVideoFile(file,{signal,onProgress:p=>onProgress(.025*p,'Inspecting video codec…')});
+  if(probe.supported===false)throw new MediaError('HF_SOURCE_CODEC',
+    'This source codec cannot be decoded by Chrome. Use Convert for editing, then export again.',{codec:probe.codec,bitDepth:probe.bitDepth});
+  if(probe.probeUnavailable){
+    onStatus('MP4/MOV demuxing unavailable for this format; using realtime browser recording.');
+    return fallbackVideo(options);
+  }
+  let decodedAudio=null;
+  if(audioMode==='clean')decodedAudio=cleanedAudio;
+  if(audioMode==='original')decodedAudio=await decodeAudioBuffer(file).catch(()=>null);
+  const requestedChannels=channels==='mono'?1:Math.min(2,decodedAudio?.numberOfChannels||2);
+  const audioCodec=container==='webm'?'opus':'mp4a.40.2';
+  const sampleRate=48000;
+  const audioConfig={codec:audioCodec,sampleRate,numberOfChannels:requestedChannels,bitrate:choice.audioBitrate};
+  const audioSupported=!!decodedAudio&&typeof AudioEncoder!=='undefined'&&
+    !!(await AudioEncoder.isConfigSupported(audioConfig).catch(()=>({supported:false}))).supported;
+  const dest=new lib.ArrayBufferTarget(),muxOpts={target:dest,firstTimestampBehavior:'offset'};
+  if(container==='webm')muxOpts.video={codec:codec==='av1'?'V_AV1':'V_VP9',width,height};
+  else{muxOpts.video={codec:codec==='hevc'?'hevc':'avc',width,height};muxOpts.fastStart='in-memory';}
+  if(audioSupported)muxOpts.audio={codec:container==='webm'?'A_OPUS':'aac',numberOfChannels:requestedChannels,sampleRate};
+  const muxer=new lib.Muxer(muxOpts);
+  let videoEncoder=null,encoderError=null,lock=null,frameCount=0,firstFrameTime=null,previousFrameTime=-1;
+  const outputCanvas=document.createElement('canvas');outputCanvas.width=width;outputCanvas.height=height;
+  const outputCtx=outputCanvas.getContext('2d',{alpha:false});
+  const stage=document.createElement('canvas'),stageCtx=stage.getContext('2d',{alpha:false});
+  const started=performance.now(),targetInterval=1/choice.fps;
+  let nextInputTime=0,lastTimestamp=-1;
   try{
-    if(navigator.wakeLock?.request){try{lock=await navigator.wakeLock.request('screen');}catch{}}
-    handle=await sourceVideo(file);
-    encoder=new VideoEncoder({output:(chunk,metadata)=>muxer.addVideoChunk(chunk,metadata),error:e=>{encodeError=e;}});
-    encoder.configure(cfg);
-    const total=Math.max(1,Math.ceil(project.video.duration*fps));
-    for(let i=0;i<total;i++){
-      abortIf(signal);if(encodeError)throw encodeError;
-      const time=i/fps;
-      await seekFrame(handle.video,time,{signal});
-      await maskCache?.ensureActive({source:handle.video,project,time,ai,signal});
-      // Single source of truth for the preview and encoded frame.
-      renderFrame(ctx,handle.video,project,time,{maskCache});
-      const frame=new VideoFrame(canvas,{timestamp:Math.round(i*1_000_000/fps),duration:Math.round(1_000_000/fps)});
-      encoder.encode(frame,{keyFrame:i===0||i%Math.max(1,Math.round(fps*2))===0});frame.close();
-      while(encoder.encodeQueueSize>8){abortIf(signal);await delay();}
-      if(i%Math.max(1,Math.round(fps/3))===0||i===total-1){
-        const elapsed=(performance.now()-timeStart)/1000,eta=elapsed/Math.max(1,i+1)*(total-i-1);
-        onProgress(.8*(i+1)/total,`Rendering ${i+1}/${total} frames · ~${Math.ceil(eta)}s remaining`);
-        await delay();
-      }
+    if(navigator.wakeLock?.request)try{lock=await navigator.wakeLock.request('screen');}catch{}
+    videoEncoder=new VideoEncoder({output:(chunk,metadata)=>muxer.addVideoChunk(chunk,metadata),error:e=>{encoderError=e;}});
+    videoEncoder.configure(cfg);
+    for await(const {frame,time,meta} of sequentialVideoFrames(file,{signal,onProgress:p=>onProgress(.04+.12*p,'Reading compressed video sequentially…')})){
+      try{
+        abortIf(signal);if(encoderError)throw encoderError;
+        // Cap output frame rate by skipping source frames, preserving VFR PTS.
+        if(fps!=='original'&&time+1/(choice.fps*4)<nextInputTime)continue;
+        if(fps!=='original')nextInputTime=Math.floor((time+1e-5)/targetInterval+1)*targetInterval;
+        drawOrientedFrame(stageCtx,frame,meta,project.video.width,project.video.height);
+        await maskCache?.ensureActive({source:stage,project,time,ai,signal});
+        // EXACT rendering function shared with the editor's live preview.
+        renderFrame(outputCtx,stage,project,time,{maskCache});
+        const timestampUs=Math.max(lastTimestamp+1,Math.round(time*1e6));
+        const vf=new VideoFrame(outputCanvas,{timestamp:timestampUs,duration:Math.max(1,Math.round(1e6/choice.fps))});
+        videoEncoder.encode(vf,{keyFrame:frameCount===0||time-(firstFrameTime||0)>=2&&frameCount%Math.max(1,Math.round(choice.fps*2))===0});
+        vf.close();lastTimestamp=timestampUs;
+        if(firstFrameTime===null)firstFrameTime=time;
+        frameCount++;
+        while(videoEncoder.encodeQueueSize>8){abortIf(signal);if(encoderError)throw encoderError;await delay();}
+        if(frameCount%6===0){
+          const ratio=Math.min(1,time/Math.max(.01,project.video.duration));
+          const elapsed=(performance.now()-started)/1000,eta=ratio>.02?elapsed*(1-ratio)/ratio:null;
+          onProgress(.16+.64*ratio,`Sequential rendering ${Math.round(ratio*100)}% · ${frameCount} frames${eta===null?'':` · ~${Math.round(eta)}s left`}`);
+          await delay();
+        }
+      }finally{frame.close();}
     }
-    await encoder.flush();if(encodeError)throw encodeError;
-    let soundOK=false,reason='';
-    if(audioPossible){
-      onStatus('Encoding original audio locally…');
-      // encodeAudio decodes source and resamples to 48k while preserving original channels.
-      const result=await encodeAudio(muxer,inputAudio,{signal,onProgress:p=>onProgress(.8+.17*p,'Encoding original audio…')});
-      soundOK=result.ok;reason=result.reason||'';
-      if(!soundOK)throw new Error('AAC encoding failed after muxer initialization: '+reason);
+    if(frameCount===0)throw new MediaError('HF_NO_FRAMES','No video frames decoded. Convert to H.264 and try again.');
+    onStatus('Finalizing encoded video…');await videoEncoder.flush();if(encoderError)throw encoderError;
+    let audioEmbedded=false;
+    if(audioSupported){
+      const result=await encodeAudio(muxer,decodedAudio,{signal,bitrate:choice.audioBitrate,channelsWanted:requestedChannels,
+        codec:audioCodec,onProgress:p=>onProgress(.82+.15*p,'Encoding audio…')});
+      audioEmbedded=result.ok;
     }
     muxer.finalize();
-    let blob=new Blob([target.buffer],{type:'video/mp4'});
-    if(audioMode==='original'&&!soundOK){
-      onStatus('Trying original-audio stream mux…');
-      try{blob=await muxOriginalAudio(blob,file,{signal,onStatus});soundOK=true;}
-      catch(e){reason='Original audio could not be verified or muxed: '+e.message;}
-    }else if(audioMode==='clean'&&!soundOK){
-      // Never substitute original music for a requested cleaned soundtrack.
-      blob=await muxCleanAudio(blob,cleanedAudio,{signal,onStatus});soundOK=true;
+    let blob=new Blob([dest.buffer],{type:container==='webm'?'video/webm':'video/mp4'});
+    let warning=null;
+    if(audioMode==='original'&&!audioEmbedded){
+      if(container==='mp4'){
+        onStatus('Copying original audio into the exported MP4…');
+        try{blob=await muxOriginalAudio(blob,file,{signal,onStatus});audioEmbedded=true;}
+        catch(e){warning='Original audio could not be included: '+e.message;}
+      }else warning='WebM was exported without original audio because the browser cannot encode Opus.';
     }
-
+    if(audioMode==='clean'&&!audioEmbedded){
+      if(container==='mp4'){blob=await muxCleanAudio(blob,cleanedAudio,{signal,onStatus});audioEmbedded=true;}
+      else throw new MediaError('HF_WEBM_CLEANED_AUDIO','This browser cannot encode cleaned Opus audio in WebM. Choose H.264 MP4 instead.');
+    }
+    if(codec==='hevc')warning=[warning,'HEVC may not play in WhatsApp and could be recompressed.'].filter(Boolean).join(' ');
+    if(container==='webm')warning=[warning,'WebM is not recommended for WhatsApp; use H.264 MP4 for broad compatibility.'].filter(Boolean).join(' ');
+    if(audioMode==='clean')warning=[warning,'AI separation may leave music. Review the output before sharing.'].filter(Boolean).join(' ');
     onProgress(1,'Export complete');
-    return {blob,format:'mp4',audio:audioMode==='none'?false:(inputAudio?soundOK:false),warning:audioMode==='none'?null:!soundOK?reason||'No verified audio track in source or export':audioMode==='clean'?'AI voice separation may leave music; listen to the exported result.':null};
+    return {blob,format:container,frames:frameCount,audio:audioMode!=='none'&&audioEmbedded,warning,
+      stats:{elapsedSeconds:(performance.now()-started)/1000,frames:frameCount,codec:cfg.codec,fps:choice.fps,bytes:blob.size,sourceCodec:probe.codec}};
+  }catch(e){
+    if(e.name==='AbortError'||e instanceof MediaError)throw e;
+    throw new MediaError('HF_SEQUENTIAL_EXPORT','Sequential export failed. Try H.264, a smaller preset or Convert for editing.',{cause:e.message});
   }finally{
-    try{encoder?.close();}catch{}
-    handle?.close();try{await lock?.release();}catch{}
+    try{videoEncoder?.close();}catch{}
+    try{await lock?.release();}catch{}
   }
 }
 // Browser fallback: records canvas frames in realtime. Prefer MP4 remux through ffmpeg.wasm;
