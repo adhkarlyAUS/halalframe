@@ -230,3 +230,14 @@
    review; it must never be displayed as a green "passed" status. */
 .music-check-segment.caution{background:#f2b950}
 .music-report-key i.caution{background:#f2b950}
+
+/* v1.9 codec recovery, export diagnostics and manual sound edits */
+.codec-warning,.export-error{background:#24292a;border:1px solid #72875b;border-radius:18px;padding:18px;margin:15px auto;max-width:940px;color:#f1f3f0}
+.codec-warning h3,.export-error strong{color:#edf6db}
+.codec-warning .audio-buttons,.audio-mute-tools .audio-buttons{display:flex;gap:10px;flex-wrap:wrap}
+.export-error{margin:12px 0;border-color:#c69d75;background:#292523}
+.export-advanced,.audio-tips,.audio-mute-tools{margin:10px 0;border:1px solid #3e4540;border-radius:12px;padding:12px;background:#212525}
+.export-advanced summary,.audio-tips summary{cursor:pointer;color:#d8e8cd;font-weight:650}
+.export-advanced .two-cols{margin:9px 0}
+.audio-mute-tools input{max-width:100%}
+@media(max-width:590px){.codec-warning{margin:12px 10px}.export-advanced .two-cols{grid-template-columns:1fr}}
