@@ -102,3 +102,56 @@
 
 /* Audio strength is a three-stop tactile slider, not an advanced codec setting. */
 #audio-strength{width:100%;accent-color:#b8f451;margin:0.45rem 0 0.2rem;min-height:28px}.strength-marks{display:flex;justify-content:space-between;gap:8px;color:#b4baba;font-size:.75rem;margin-bottom:.8rem}.strength-marks span:nth-child(2){text-align:center}.strength-marks span:last-child{text-align:right}
+
+/* v1.6 — approved wordmark lifted from its rectangular matte */
+.splash-screen{background:radial-gradient(ellipse 70% 45% at 50% 46%,#26321f 0,#141a17 42%,#101315 88%);}
+.splash-content{max-width:940px;min-height:58vh;justify-content:center;gap:20px;transform:translateY(-2vh)}
+.splash-hero{position:relative;width:min(90vw,910px);padding:28px 18px;filter:drop-shadow(0 10px 40px #b9fa3520)}
+.splash-logo{width:100%;max-width:none;animation:splash-breathe 3.2s ease-in-out infinite}
+.splash-corner{position:absolute;width:39px;height:39px;border:0 solid #b8f451;opacity:.85;filter:drop-shadow(0 0 11px #b8f45180);animation:frame-draw 1.3s cubic-bezier(.22,.8,.3,1) both}
+.splash-corner.tl{top:0;left:0;border-top-width:3px;border-left-width:3px;border-top-left-radius:15px}
+.splash-corner.tr{top:0;right:0;border-top-width:3px;border-right-width:3px;border-top-right-radius:15px;animation-delay:.1s}
+.splash-corner.bl{bottom:0;left:0;border-bottom-width:3px;border-left-width:3px;border-bottom-left-radius:15px;animation-delay:.2s}
+.splash-corner.br{bottom:0;right:0;border-bottom-width:3px;border-right-width:3px;border-bottom-right-radius:15px;animation-delay:.3s}
+@keyframes frame-draw{from{opacity:0;transform:scale(.8)}to{opacity:.85;transform:scale(1)}}
+.splash-loader{width:min(400px,80vw);height:5px;margin-top:7px;background:#343d34}
+.splash-progress{animation:none;transform:none;width:8%;transition:width .35s ease;background:linear-gradient(90deg,#91dc43,#d6ff83)}
+.splash-status{font-size:13px;letter-spacing:.02em}
+.onboard-visual{width:100%;max-width:540px;min-height:195px;height:auto;aspect-ratio:auto;background:none;border:0;box-shadow:none;margin:12px auto 3px;border-radius:0;display:flex;justify-content:center;align-items:center;gap:0}
+.onboard-visual.is-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));column-gap:3px;min-height:170px}
+.onboard-illustration{display:block;width:100%;max-height:165px;min-width:0;filter:drop-shadow(0 0 13px #b8f45115);animation:illustration-rise 1s ease both}
+.onboard-illustration:nth-child(2){animation-delay:.16s}.onboard-illustration:nth-child(3){animation-delay:.32s}
+@keyframes illustration-rise{from{opacity:0;transform:translateY(13px)}to{opacity:1;transform:translateY(0)}}
+.onboard-privacy-symbol{font-size:80px;color:#b8f451;line-height:1;filter:drop-shadow(0 0 28px #b8f45138)}
+.onboard-description.onboard-centered{text-align:center;margin-left:auto;margin-right:auto}
+.onboard-credits p{font-size:10px!important;line-height:1.55}.onboard-credits strong{font-size:12px}
+.mode.exclude-mode.selected{background:#303629;border:1px solid #c5f580;color:#e5ffb6}
+.scan-person .choice-group{display:flex;flex-wrap:wrap;gap:5px;font-size:11px}
+.scan-person .choice-group label{display:inline-flex;align-items:center;gap:4px;background:#263027;border:1px solid #465841;border-radius:7px;padding:3px 6px}
+.scan-person .choice-group input{accent-color:#b8f451}
+@media(max-width:620px){
+ .splash-hero{width:min(92vw,560px);padding:20px 4px}
+ .splash-corner{width:23px;height:23px}
+ .splash-content{min-height:48vh;gap:14px}
+ .splash-slogan{font-size:8px;letter-spacing:.11em}
+ .onboard-visual.is-steps{min-height:114px;margin:0 auto}
+ .onboard-illustration{max-height:112px}
+}
+@media(prefers-reduced-motion:reduce){.splash-corner,.onboard-illustration{animation:none!important}.splash-progress{transition:none!important}}
+
+/* v1.6 probabilistic music-risk review, never a certification */
+.music-report{background:#1c2520;border:1px solid #52644d;border-radius:12px;padding:13px;margin:14px 0}
+.music-report strong{font-size:12px;color:#edf5e9}
+.music-report p{font-size:11px;line-height:1.5;color:#c9d0c9}
+.music-report-strip{display:flex;width:100%;height:28px;overflow:hidden;border:1px solid #435045;border-radius:7px;margin:10px 0 6px}
+.music-check-segment{border:0;border-right:1px solid #1d2420;padding:0;cursor:pointer;min-width:3px}
+.music-check-segment.speech{background:#91d765}.music-check-segment.removed{background:#868f88}.music-check-segment.risk{background:#ea6868}
+.music-check-segment:hover{filter:brightness(1.25)}
+.music-report-key{display:flex;gap:10px;flex-wrap:wrap;font-size:9px;color:#d2d7d3}
+.music-report-key span{display:inline-flex;align-items:center;gap:4px}
+.music-report-key i{width:7px;height:7px;border-radius:2px;display:inline-block}
+.music-report-key i.speech{background:#91d765}.music-report-key i.removed{background:#868f88}.music-report-key i.risk{background:#ea6868}
+
+.review-identity-thumbs{display:flex;justify-content:center;gap:12px;margin:9px 0}
+.review-identity-thumbs div{display:flex;flex-direction:column;gap:5px;flex:1;max-width:135px}
+.review-identity-thumbs span{font-size:10px;color:#b8d997}.review-identity-thumbs img{width:100%;height:85px;object-fit:contain;background:#202622;border-radius:7px;border:1px solid #596a50}
