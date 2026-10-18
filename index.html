@@ -3,19 +3,19 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#17191b"><meta name="description" content="HalalFrame by Adhkarly — private, on-device video concealment editor.">
-<title>HalalFrame v1.5.1 — An Adhkarly Product</title>
+<title>HalalFrame v1.6 — An Adhkarly Product</title>
 <style>.splash-screen{position:fixed;inset:0;z-index:220;background:#111416;color:#f6f7f3;display:flex;align-items:center;justify-content:center}.splash-content{width:min(600px,90%);text-align:center}.splash-logo{width:min(100%,480px)}.splash-screen.hidden{display:none!important}</style>
-<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=1.5.1">
-<link rel="icon" href="assets/favicon-32.png?v=1.5.1" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=1.6">
+<link rel="icon" href="assets/favicon-32.png?v=1.6" type="image/png" sizes="32x32">
 <script>
 // The ONE release constant: CSS, manifest, entry module, transitive imports and
 // service-worker registration all derive their cache-busting URLs from here.
-const APP_VERSION='1.5.1';window.APP_VERSION=APP_VERSION;
+const APP_VERSION='1.6';window.APP_VERSION=APP_VERSION;
 (function bootstrapVersionedAssets(){
   const paths=['js/main.js','js/state.js','js/engine/ai.js','js/engine/render.js',
     'js/engine/segmentation.js','js/engine/export.js','js/engine/ffmpeg-worker.js',
-    'js/engine/tracker.js','js/ui/canvas-input.js','js/ui/timeline.js','js/ui/first-run.js','js/ui/share-target.js',
-    'js/ui/audio-panel.js','js/audio/models.js','js/audio/dsp.js','js/audio/music-worker.js'];
+    'js/engine/tracker.js','js/engine/identity.js','js/ui/canvas-input.js','js/ui/timeline.js','js/ui/first-run.js','js/ui/share-target.js',
+    'js/ui/audio-panel.js','js/audio/models.js','js/audio/music-check.js','js/audio/dsp.js','js/audio/music-worker.js'];
   const imports={};
   for(const path of paths)imports[new URL(path,document.baseURI).href]=new URL(`${path}?v=${APP_VERSION}`,document.baseURI).href;
   const map=document.createElement('script');map.type='importmap';map.textContent=JSON.stringify({imports});document.head.append(map);
@@ -29,17 +29,18 @@ const APP_VERSION='1.5.1';window.APP_VERSION=APP_VERSION;
 <!-- Visible immediately, before JavaScript has loaded. Never blocks forever on AI availability. -->
 <section id="splash-screen" class="splash-screen" aria-label="HalalFrame loading" aria-live="polite">
  <div class="splash-content">
-  <img class="splash-logo" src="assets/logo.png" alt="HalalFrame — An Adhkarly Product">
-  <div class="splash-slogan">PRIVATE MEDIA EDITING</div>
+  <div class="splash-hero"><span class="splash-corner tl"></span><span class="splash-corner tr"></span><span class="splash-corner bl"></span><span class="splash-corner br"></span>
+  <img class="splash-logo" src="assets/logo-transparent.png" alt="HalalFrame — An Adhkarly Product"></div>
+  <div class="splash-slogan">PRIVATE MEDIA EDITING · BUILT FOR THE UMMAH</div>
   <div class="splash-loader"><span id="splash-progress" class="splash-progress"></span></div>
   <p class="splash-status" id="splash-status">Preparing your private editor…</p>
  </div>
 </section>
 <section id="onboarding" class="onboarding hidden" role="dialog" aria-modal="true" aria-labelledby="onboard-title">
   <div class="onboarding-panel">
-    <div class="onboard-brand"><img src="assets/logo.png" alt="HalalFrame by Adhkarly"></div>
+    <div class="onboard-brand"><img src="assets/logo-transparent.png" alt="HalalFrame by Adhkarly"></div>
     <div class="onboard-step-label" id="onboard-step-label">WELCOME · 1 OF 4</div>
-    <div class="onboard-visual" id="onboard-visual" aria-hidden="true">◇</div>
+    <div class="onboard-visual hidden" id="onboard-visual" aria-hidden="true"></div>
     <h1 id="onboard-title">Welcome to HalalFrame</h1>
     <div id="onboard-description" class="onboard-description">Keep what matters. Conceal what you prefer not to share.</div>
     <div id="onboard-disclaimer" class="onboard-disclaimer hidden">
@@ -47,17 +48,17 @@ const APP_VERSION='1.5.1';window.APP_VERSION=APP_VERSION;
       <p>AI can miss people, exposed awrah or individual video frames. You must review the <strong>entire photo or video</strong> before sharing it. HalalFrame helps with editing; <strong>it does not provide religious rulings</strong> or guarantee religious compliance.</p>
       <p>Only you can decide what is appropriate to share. Please correct missed areas manually and carefully check the exported result.</p>
       <label class="onboard-accept"><input id="onboard-agree" type="checkbox"><span>I understand AI can miss content, and I agree to review the entire result before sharing.</span></label>
-      <div class="onboard-credits"><strong>Developed by FD Abu Ishaq and Muzzy</strong><p>Special thanks to my friend Mustapha (Muzzy) for inspiring this idea. I ask Allah that the reward for this goes to him and to all the muwahhideen who are trying to uphold the seriousness of forbidding munkar and encouraging goodness.</p></div>
+      <div class="onboard-credits"><strong>Developed by Adhkarly Team</strong><p>Special thanks to my friend Mustapha (Muzzy) for inspiring this idea. I ask Allah that the reward for this goes to him and to all the muwahhideen who are trying to uphold the seriousness of forbidding munkar and encouraging goodness.</p></div>
     </div>
     <div class="onboard-bottom"><div id="onboard-dots" class="onboard-dots" aria-label="Onboarding progress"></div>
       <div class="onboard-buttons"><button id="onboard-back" type="button" class="btn outline">Back</button><button id="onboard-next" type="button" class="btn primary">Next →</button></div>
     </div>
   </div>
 </section>
-<div id="file-warning"><img src="assets/logo.png" alt="HalalFrame"><h1>Open HalalFrame over HTTPS</h1><p>This project uses JavaScript modules, on-device AI and a service worker. Opening <code>index.html</code> directly from a file manager can block those features. Upload the ZIP contents to GitHub Pages or Netlify Drop and open the HTTPS address.</p><p>Your videos and photos will still stay on your device.</p></div>
+<div id="file-warning"><img src="assets/logo-transparent.png" alt="HalalFrame"><h1>Open HalalFrame over HTTPS</h1><p>This project uses JavaScript modules, on-device AI and a service worker. Opening <code>index.html</code> directly from a file manager can block those features. Upload the ZIP contents to GitHub Pages or Netlify Drop and open the HTTPS address.</p><p>Your videos and photos will still stay on your device.</p></div>
 <script>if(location.protocol==='file:')document.documentElement.classList.add('local-file');</script>
 <header class="topbar"><div class="wrap head-inner">
-  <img src="assets/logo.png" alt="HalalFrame — An Adhkarly Product" class="logo">
+  <img src="assets/logo-transparent.png" alt="HalalFrame — An Adhkarly Product" class="logo">
   <div class="head-right"><span class="privacy-pill"><span class="pulse"></span> ON YOUR DEVICE</span><span id="offline-status" class="offline-status">AI first download required</span><button id="help-btn" class="icon-btn" title="How it works" aria-label="Help">?</button></div>
 </div></header>
 <main class="wrap">
@@ -82,7 +83,7 @@ const APP_VERSION='1.5.1';window.APP_VERSION=APP_VERSION;
         <nav class="editor-tabs" role="tablist" aria-label="Editor settings"><button id="tab-visual" class="editor-tab active" role="tab" aria-selected="true">◈ Visual</button><button id="tab-audio" class="editor-tab" role="tab" aria-selected="false">♫ Audio</button></nav>
         <div class="control-card" data-visual-settings><h3>1 · Find or select</h3>
           <div class="button-grid"><button id="find-people" class="btn primary">◎ Find all people</button><button id="cover-everyone" class="btn secondary">Cover everyone</button></div>
-          <div class="mode-group" role="group" aria-label="Selection method"><button class="mode selected" id="mode-select">☝ Tap person</button><button class="mode" id="mode-draw">▣ Draw new box</button><button class="mode" id="mode-key">◆ Add keyframe</button></div>
+          <div class="mode-group" role="group" aria-label="Selection method"><button class="mode selected" id="mode-select">☝ Tap person</button><button class="mode" id="mode-draw">▣ Draw new box</button><button class="mode" id="mode-key">◆ Add keyframe</button><button class="mode exclude-mode" id="mode-exclude">⊘ Don’t cover</button></div>
           <label class="field">Tracking accuracy<select id="tracking-accuracy"><option value="best">Best · every frame (default under 30 s)</option><option value="fast">Fast · 10 fps</option></select></label>
           <p class="hint" id="mode-help">Pause the video, then tap someone to create a tracked concealment.</p>
           <div class="dim tiny" id="ai-status">AI loads only when you request detection.</div>
@@ -90,7 +91,7 @@ const APP_VERSION='1.5.1';window.APP_VERSION=APP_VERSION;
         <div class="control-card" data-visual-settings><div class="section-head"><h3>2 · Selected region</h3><button id="delete-mask" class="text-btn danger" disabled>Delete</button></div>
           <div id="no-selection" class="empty-selection">Select or draw a region to edit its settings.</div>
           <div id="selection-panel" class="hidden">
-            <label class="field">Label<input id="mask-label" type="text" maxlength="55"></label>
+            <label class="check" style="margin-bottom:12px"><input id="mask-enabled" type="checkbox" checked> Conceal this person (on/off)</label><label class="field">Label<input id="mask-label" type="text" maxlength="55"></label>
             <div class="two-cols"><label class="field">Effect<select id="effect"><option value="pixelate">Pixelate (default)</option><option value="blur">Blur</option></select></label><label class="field">Shape<select id="shape"><option value="outline">Person outline (default)</option><option value="box">Box</option><option value="skin">Exposed skin</option><option value="hair">Hair only</option></select></label></div>
             <div class="two-cols"><label class="field">Strength<input id="strength" type="range" min="3" max="60" step="1"></label><label class="field">Padding <span id="padding-label">15%</span><input id="padding" type="range" min="0" max="35" step="1"></label></div>
             <div class="two-cols"><label class="field">Feather <span id="feather-label">0px</span><input id="feather" type="range" min="0" max="24" step="1" value="0"></label><label class="field">Safety margin <span id="safety-label">8px</span><input id="safety-margin" type="range" min="0" max="40" step="1" value="8"></label></div>
@@ -113,7 +114,7 @@ const APP_VERSION='1.5.1';window.APP_VERSION=APP_VERSION;
           <p class="hint" id="audio-summary">Original sound is kept.</p>
           <div id="audio-clean-settings" class="audio-clean-settings hidden">
             <div class="audio-warning"><strong>Important</strong> · No AI removes 100% of music in every recording. Listen to the entire result before sharing. <strong>No audio</strong> is the safest option.</div>
-            <label class="field">Quality<select id="audio-quality"><option value="quick">Quick · ~30 MB · lower memory</option><option value="best">Best · ~67 MB · slower, more memory</option></select></label>
+            <label class="field">Quality<select id="audio-quality"><option value="quick">Quick · ~30 MB · lower memory</option><option value="best">Best · ~67 MB · slower, more memory</option><option value="studio">Studio (experimental) · Demucs v4 · ~181 MB · desktop</option></select></label>
             <label class="field" for="audio-strength">Music suppression <strong id="audio-strength-label">Strong</strong></label><input id="audio-strength" type="range" min="0" max="2" step="1" value="1" aria-label="Music suppression strength: Gentle, Strong or Maximum"><div class="strength-marks" aria-hidden="true"><span>Gentle</span><span>Strong</span><span>Maximum</span></div>
             <label class="check audio-strict"><input type="checkbox" id="audio-strict"> Strict: mute speech intervals if strong non-voice sound is suspected (may also mute speech)</label>
             <p class="hint" id="audio-model-size">First download: voice detector + Quick model.</p>
@@ -122,6 +123,10 @@ const APP_VERSION='1.5.1';window.APP_VERSION=APP_VERSION;
             <button type="button" id="audio-cancel" class="btn outline small hidden">Cancel processing</button>
             <div id="audio-progress-wrap" class="audio-progress-wrap hidden"><div class="progress-track"><div id="audio-progress" class="progress-fill"></div></div><p id="audio-progress-text" class="hint" aria-live="polite">Ready</p></div>
             <div id="audio-backend" class="dim tiny">WebGPU preferred · WASM fallback</div>
+            <div id="music-report" class="music-report hidden" aria-live="polite"><strong>Music check · original vs processed</strong><p id="music-report-description">Independent verification pending.</p>
+              <div class="music-report-strip" id="music-report-strip"></div>
+              <div class="music-report-key"><span><i class="speech"></i> Speech / low risk</span><span><i class="removed"></i> Music removed</span><span><i class="risk"></i> Possible music</span></div>
+              <p class="hint">YAMNet scores are estimates, not a guarantee. If red remains, choose No audio or review and mute those portions.</p></div>
             <div class="audio-preview-control"><strong>A / B preview · 5 seconds from the playhead</strong><div class="audio-buttons"><button id="audio-preview-original" class="btn subtle small" type="button">▶ Original</button><button id="audio-preview-clean" class="btn secondary small" type="button" disabled>▶ Cleaned</button><button id="audio-preview-stop" class="btn subtle small" type="button" disabled>■ Stop</button></div><div class="hint" id="audio-preview-status">Pause the video, then compare a section.</div></div>
           </div>
         </div>
@@ -143,7 +148,7 @@ const APP_VERSION='1.5.1';window.APP_VERSION=APP_VERSION;
   </section>
   <section class="discover-card"><div class="discover-label">ALSO FROM OUR DEVELOPERS</div><div class="discover-wordmark"><span>adhkar</span><span class="discover-ly">ly</span></div><p>Daily adhkar, Qur'an, du'as and Islamic learning — built by the Adhkarly team.</p><div class="discover-actions"><button class="btn subtle" disabled title="App link not configured">Android · Coming soon</button><button class="btn subtle" disabled title="App link not configured">iPhone · Coming soon</button><button class="btn subtle" disabled title="App link not configured">Web · Coming soon</button></div></section>
   <section class="about-grid"><article class="info-card"><h3>Private by design</h3><p>Your photo or video remains in your browser tab. No accounts, servers, API keys or uploaded media. AI models must download once before detection works.</p></article><article class="info-card"><h3>Before you share</h3><p>AI can miss a person, a frame or exposed awrah. Review everything manually. Nothing in this app guarantees religious compliance.</p><button id="ruling-open" class="text-btn">Read the reminder ↗</button></article></section>
-  <footer class="footer"><div>HALALFRAME v1.5.1 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p class="footer-credit">Developed by FD Abu Ishaq and Muzzy</p><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · <button id="install-app" class="text-btn">Install app</button> · <button id="footer-disclaimer" class="text-btn">View disclaimer again</button> · <button id="footer-social-help" class="text-btn">Social media help</button></p></footer>
+  <footer class="footer"><div>HALALFRAME v1.6 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p class="footer-credit">Developed by Adhkarly Team</p><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · <button id="install-app" class="text-btn">Install app</button> · <button id="footer-disclaimer" class="text-btn">View disclaimer again</button> · <button id="footer-social-help" class="text-btn">Social media help</button></p></footer>
 </main>
 <div id="update-banner" class="update-banner hidden" role="status" aria-live="polite">
   <span>Update ready — tap to reload</span><button type="button" id="update-reload" class="btn primary small">Reload</button>
@@ -160,7 +165,8 @@ const APP_VERSION='1.5.1';window.APP_VERSION=APP_VERSION;
   <p id="restore-description">The original video is never stored. Previous concealments will only be used if you choose Restore.</p>
   <div class="modal-buttons"><button id="restore-yes" class="btn primary">Restore</button><button id="restore-fresh" class="btn outline">Start fresh</button></div></div>
 </div>
-<div id="review-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="review-title"><div class="modal"><div class="eyebrow lime">TRACKING NEEDS YOUR HELP</div><h2 id="review-title">Check this frame</h2><p id="review-description"></p><img id="review-shot" alt="Current video frame for tracking review" class="review-image"><div class="modal-buttons"><button id="review-continue" class="btn primary">Keep going</button><button id="review-fix" class="btn secondary">Fix box</button><button id="review-end" class="btn outline">End concealment here</button><button id="review-skip" class="btn subtle">Skip ahead</button></div></div></div>
+<div id="review-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="review-title"><div class="modal"><div class="eyebrow lime">TRACKING NEEDS YOUR HELP</div><h2 id="review-title">Check this frame</h2><p id="review-description"></p><img id="review-shot" alt="Current video frame for tracking review" class="review-image">
+<div id="review-identity-thumbs" class="review-identity-thumbs hidden"><div><span>Originally selected</span><img id="review-target-thumb" alt="Your selected person"></div><div><span>Current candidate</span><img id="review-candidate-thumb" alt="Possible tracking match"></div></div><div class="modal-buttons"><button id="review-continue" class="btn primary">Keep going</button><button id="review-fix" class="btn secondary">Fix box</button><button id="review-end" class="btn outline">End concealment here</button><button id="review-skip" class="btn subtle">Skip ahead</button></div></div></div>
 <div id="export-review-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="export-review-title">
  <div class="modal export-review-dialog"><div class="eyebrow lime">BEFORE YOU EXPORT</div><h2 id="export-review-title">Have you reviewed the entire result?</h2>
  <p>AI may miss people, exposed awrah or individual frames. Review your complete media, including any uncertain tracking intervals, and inspect the exported file before sharing.</p>
@@ -168,7 +174,7 @@ const APP_VERSION='1.5.1';window.APP_VERSION=APP_VERSION;
  <div class="modal-buttons"><button type="button" id="export-review-cancel" class="btn outline">Go back</button><button type="button" id="export-review-continue" class="btn primary" disabled>Continue to export →</button></div>
  </div>
 </div>
-<div id="scan-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="scan-title"><div class="modal scan-modal"><div class="section-head"><h2 id="scan-title">People found</h2><button id="scan-close" class="icon-btn" aria-label="Close">×</button></div><p>Select people to conceal. IDs are estimated and may change when people cross. Review the result.</p><label class="check"><input type="checkbox" id="scan-all" checked> Cover everyone found</label><div id="scan-list" class="scan-list"></div><button id="scan-apply" class="btn primary block">Conceal selected people</button></div></div>
+<div id="scan-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="scan-title"><div class="modal scan-modal"><div class="section-head"><h2 id="scan-title">People found</h2><button id="scan-close" class="icon-btn" aria-label="Close">×</button></div><p>Choose who to conceal, and mark anyone who must never be covered. A crossing can still be ambiguous; review the result.</p><label class="check"><input type="checkbox" id="scan-all" checked> Cover everyone found</label><div id="scan-list" class="scan-list"></div><button id="scan-apply" class="btn primary block">Apply person choices</button></div></div>
 <div id="info-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="info-title"><div class="modal"><div class="section-head"><h2 id="info-title">Before you share</h2><button id="info-close" class="icon-btn" aria-label="Close">×</button></div><div id="info-content" class="info-copy"></div></div></div>
 <div id="mask-menu" class="menu hidden"><button id="mask-duplicate">Duplicate region</button><button id="mask-delete-menu">Delete region</button></div>
 <script type="module">import(`./js/main.js?v=${APP_VERSION}`).catch(err=>{console.error(err);document.getElementById('toast').textContent='Editor failed to load — reload online to update.';document.getElementById('toast').classList.add('show');document.getElementById('splash-screen')?.classList.add('hidden');});</script>

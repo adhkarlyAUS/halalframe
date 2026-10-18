@@ -1,118 +1,75 @@
-# HalalFrame v1.5.1 — An Adhkarly Product
+# HalalFrame v1.6 — Precision evaluation build
 
-**Status:** Targeted audio hotfix of the live, user-tested v1.5 PWA. The user confirmed that **Quick ONNX actually runs on Chrome when the worker message is delayed**, along with measured music attenuation; these v1.5.1 startup and Maximum refinements were unit-tested locally, **not yet retested against the real models on Android**. End-to-end cleaned MP4 playback was not re-verified in this build. Do not describe a video as guaranteed free of awrah or music. **No account, backend, server media upload, paid API or API key.** Input photos, video and audio are processed on the user's device. Initial JavaScript/WASM/ONNX model downloads require internet access; only the weights and code, not user media, are fetched from third-party CDNs.
+HalalFrame is a free, static, installable on-device photo/video editor by the Adhkarly Team. No account, app backend, server upload, or API keys. The first use of the optional AI features downloads pretrained models from pinned Google/Hugging Face addresses. Browsers and model hosts may process ordinary network metadata; the user's own media is never sent by our application.
 
-Keep the approved `assets/logo.png` and Adhkarly purple ownership signature. Credits: **Developed by FD Abu Ishaq and Muzzy.** Special thanks to Mustapha (Muzzy) are preserved from v1.4.
+**IMPORTANT:** The v1.5.1 user-confirmed functionality is preserved. v1.6's *new* instance tracking and advanced music checks have **not** been verified against real models or Android hardware in this execution environment. Do not describe the edited media as guaranteed awrah-free or music-free. Always review every frame and listen before sharing; **No audio** is the only reliable way to remove all audio.
 
-## v1.5.1 audio hotfix — targeted changes only
+## Quick start / free hosting
 
-- **Worker startup handshake:** `js/audio/music-worker.js` registers `self.onmessage` synchronously and announces `{type:'ready',version:'1.5.1'}` immediately; `models.js` and `dsp.js` now load lazily after the first process request. `js/ui/audio-panel.js` waits for the ready event **before** transferring buffers, fixing the first-run lost-message race.
-- **Never hang without feedback:** both worker startup and processing have a **30-second inactivity watchdog**, reset on worker progress and delegate notifications, with explicit failure messages, `worker.onerror`, `worker.onmessageerror`, and full cleanup on Cancel. The timer protects against hangs; on very slow hardware an otherwise valid model initialization without progress for 30 s may need a retry.
-- **Maximum-only tonal cleanup:** after the existing MDX vocal separation and speech gate, an extra overlapping STFT pass learns persistent narrow instrumental frequencies from the **music-only** portions of the original recording, then attenuates matching peaks in the vocal stem during speech. Music-only segments stay muted. This can weaken speech frequencies where they overlap music; **always listen to the cleaned result**. Where the source has no reliable music-only reference, the separate vocal track is retained without pretending a stronger filter ran.
-- **Best stays distinct:** Quick uses pinned `UVR_MDXNET_9482.onnx` (**29,704,436 bytes**); Best uses the pinned, larger `UVR-MDX-NET-Voc_FT.onnx` (**66,762,490 bytes**). The selected model name/size is reported to the worker progress display. Both checksums and the model URLs are **unchanged**; the existing `halalframe-audio-models-v1.5` browser cache is intentionally reused so users do not need another large download.
-- Only the HTML release version/cache-busting has changed outside the audio code. **No changes to detection, video tracking, MP4 export, installed PWA branding, or saved projects.**
+1. Download and unzip the **full** v1.6 package.
+2. In https://github.com/adhkarlyaus/halalframe upload **the contents** of this folder to the repository root, replacing the existing files. Commit to `main`.
+3. Existing GitHub Pages deployment updates automatically. Open `https://adhkarlyaus.github.io/halalframe/?v=1.6`, let the new service worker activate, then tap **Update ready — reload** if shown.
+4. On Android Chrome, install as a PWA from the browser menu. On first use, remain online until required models are cached.
+5. If opening `index.html` over `file://`, JavaScript modules may be restricted; use HTTPS or a local web server (`python3 -m http.server 8000`).
 
-**User-reported real v1.5 Quick-model findings before the hotfix:** 40% speech detection, non-speech music intervals nearly silent, speech RMS 0.144 → 0.127, under-speech attenuation at 131 Hz: −17 dB; 262 Hz: −13 dB; 330 Hz: −5 dB; 392 Hz: −5.5 dB. The new Maximum refinement is not yet measured with this real model. Do not treat synthetic energy improvements as a prediction of results on arbitrary music.
+## What's new
 
-**Hotfix tests (from the extracted ZIP):**
+### A. Person selection that doesn't spread to a bystander
 
-```bash
-node tests/regression/v151-worker-handshake.test.mjs
-node tests/regression/v151-audio-hotfix.test.mjs
-node tests/regression/v15-audio.test.mjs
-node tests/regression/v15-release.test.mjs
-```
+* `js/engine/identity.js`: Hungarian global assignment across all detected people; constant-velocity Kalman centre prediction, torso HSV histograms, relative bounding/landmark body proportions. The existing One-Euro tracking and safe growing lost-person box are retained. An optional MediaPipe MobileNet V3 Small CNN embedding checks appearance at ambiguous crossings. Bad matches trigger **Is this the right person?** review, with both selected and proposed thumbnails.
+* `js/engine/ai.js`: optional MediaPipe **PoseLandmarker Full**, 5 poses, `outputSegmentationMasks: true`, with GPU → CPU fallback. `ImageEmbedder` loads lazily. Models: Pose `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`; ImageEmbedder `https://storage.googleapis.com/mediapipe-models/image_embedder/mobilenet_v3_small/float32/1/mobilenet_v3_small.tflite`. Pinned MediaPipe package: `@mediapipe/tasks-vision@0.10.22-rc.20250304`.
+* `js/engine/segmentation.js`: selects the **target's own pose probability mask**, not the union of all people. On skin/hair modes, the class-specific mask is intersected with the target's instance. Fallback is bounded to the selected box and subtracts separately detected other people outside the selected person's own tracked region. When the pose/segmenter fails, the **padded box** remains a conservative fallback. A provisional preview clip is limited to the selected track box until inference completes. The current frame and tracked neighbor positions are used to avoid persistent masking on someone else.
+* Editor: **Don't cover** mode, scanned-person Cover / Don't cover / Skip choices, and a **Conceal this person** on/off toggle. Exclusion tracks are saved with the project and respect time ranges.
 
-### Android acceptance for v1.5.1
+**Safety tradeoff:** A growing fallback while a target is lost can still cover an unrelated person whose location becomes ambiguous. A real pose mask can also assign the wrong individual at a difficult crossing. No general-purpose CV model guarantees the selected person is fully covered *and* all bystanders are untouched. Export remains subject to full manual review.
 
-1. Commit the replacement files to the GitHub Pages repository root; open `https://adhkarlyaus.github.io/halalframe/?v=1.5.1` and confirm the footer says **v1.5.1** (no worker hang).
-2. Use the user's 10 s speech/music test with Quick + Strong. On first click, expect **worker ready → model download/cache → VAD → separate → cleaned preview** without needing to wait or retry the click. Cancellation and errors must produce visible feedback.
-3. Retry **Quick + Maximum**. Listen for residual music under speech and compare intelligibility; the four-tone regression is included only as a **simulation**, not proof of real-world separation.
-4. Choose **Best**, verify the UI says **Best · MDX-Net Voc FT** and the download/cache status describes the ~66.8 MB model. Run it on sufficient-memory hardware; test AAC export with the cleaned track, and verify the output in Android Gallery/WhatsApp.
-5. Disconnect internet after models are cached and repeat processing to verify offline use. If the worker stalls without any progress for 30 seconds, it should report a recoverable error rather than leave a spinning Cancel button forever.
+### B. Music removal verification
 
-## How to run and publish free
+* Original / No audio / Remove music remain, including the Quick (~30 MB) and Best (~67 MB) MDX-Net vocal-isolation models, the worker handshake, cancellable processing and A/B preview.
+* **Experimental Studio / Demucs v4** option downloads a ~181 MB HTDemucs ONNX export and attempts to run through pinned `demucs-web@1.0.2`. Browser memory and GitHub Pages cross-origin-isolation restrictions may make Studio unavailable. It throws a clear error instead of silently substituting the original soundtrack. It is **not production-verified**. The MIT code licence is verified; the trained Demucs weight-use rights remain less certain for commercial advertising-supported use, so review rights before monetizing/distributing it.
+* A pinned MediaPipe AudioClassifier/YAMNet checks the original and the processed audio using 0.975-second windows. Colour strip: **green** speech/low-confidence music, **grey** apparently removed music, **red** remaining music risk. High-risk non-speech intervals are muted; Strict also mutes high-risk intervals beneath speech; after muting, it checks again. **Unavailable or failed classification is shown as unverified**, not clean.
+* Silero VAD now uses ≥224 ms pre/post speech padding. Maximum retains the v1.5.1 reference-based steady-tone suppression as a limited polish pass. A full DeepFilterNet3 3-network streaming pipeline is **not** included: shipping bare ONNX weights without its stateful DSP/decoders would misleadingly imply the feature works.
+* Original audio is retained only when the user selects it. Edited PCM continues through the existing AAC MP4 export; **No audio** produces a video without an audio track.
 
-1. Extract the ZIP. The folder contents must be served from a web root, with `index.html`, `css/`, `js/`, `assets/`, `manifest.json`, and `sw.js` together. Do **not** upload a containing folder one level deeper.
-2. For desktop local testing: `python3 -m http.server 8080` inside the extracted folder, then visit `http://localhost:8080`. Direct `file://` opening displays a helpful message instead of running module scripts.
-3. For a free public HTTPS app: create/use `https://github.com/adhkarlyaus/halalframe`, upload and overwrite all extracted files into the **repository root**, commit to `main`, then in **Settings → Pages → Deploy from branch → main / (root)**. Open `https://adhkarlyaus.github.io/halalframe/?v=1.5.1` after GitHub Pages finishes.
-4. On Android Chrome use **Install app** in the footer / About, or Chrome's menu → **Install app**. Existing installed PWAs may need a fresh installation if Android delays refreshing their manifest/icons. On iPhone use Safari → Share → Add to Home Screen. On standalone launch the charcoal HalalFrame splash still displays.
-5. Do a hard refresh if an older document is still open. Versioned imports and the network-first service worker are carried forward from v1.3/v1.4. Old shell caches are removed while downloaded MediaPipe weights remain available offline.
+Models / libraries and licences:
 
-## v1.5 changes — carried forward unchanged from v1.4 tracking and segmentation engines
+| Package/model | Pinned URL or revision | Licence / status |
+|---|---|---|
+| MediaPipe Pose + Embedder | official Google model URLs above, version path `/1/` | Google MediaPipe tasks package Apache-2.0 |
+| MediaPipe AudioClassifier / YAMNet | `@mediapipe/tasks-audio@0.10.22-rc.20250304`, `https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite` | tasks package Apache-2.0; model downloaded on demand |
+| Silero VAD | git revision `60b7ffa243625ebdc1070275a29f18c87843786a` (in `js/audio/models.js`) | MIT |
+| MDX-Net Quick / Best | Politrees UVR resources git revision `8cc4418db60d96e501f42889370b8bf3eb6df2d2` (checksums in `models.js`) | hosted freely; confirm underlying weights rights for commercial use |
+| HTDemucs v4 / demucs-web | npm `demucs-web@1.0.2`; `timcsy/demucs-web-onnx` model at revision `92e33df`, SHA256 in `models.js` | package MIT; **weight commercial-rights caveat**, not verified in target Chrome |
+| Existing ONNX runtime | `onnxruntime-web@1.22.0` | MIT |
 
-### Person outline by default
+### C. Design
 
-Every selection from **Tap Person**, **Find all people**, **Cover everyone**, and **Draw** uses shape `outline` with Pixelate as the effect. The outline uses MediaPipe's hair, skin and clothing classes within the tracked box; if masks fail/are empty/too small, the preview and MP4 export both use the **full padded box**, never an empty mask. Existing project selections retain their chosen shape. The v1.4 source detection, tracker, timeline, first-run gate, export review, and Adhkarly branding remain intact.
+* Original approved HalalFrame wordmark extracted to transparent PNG at `assets/logo-transparent.png` (the old opaque `assets/logo.png` is retained for compatibility). Splash, onboarding and header use the transparent version on charcoal with the original purple Adhkarly badge.
+* Larger centred splash, lime draw-on framing corners and real App → AI → Ready stage texts. Respects `prefers-reduced-motion`.
+* Step 1 has no diamond. Step 2 has custom editable SVGs: tap, track, share. Step 3 privacy text centred. Step 4 preserves disclaimer and exact original special thanks, with smaller attribution.
+* Everywhere the developer credit is now **Developed by Adhkarly Team**. The special thanks to Mustapha (Muzzy) is unchanged.
+* Version is `APP_VERSION='1.6'`; app-shell JS/CSS cache-busting and network-first updates are retained. Large model weights are cached when fetched.
 
-### CLEAR ALL CHANGES
+## Regression tests / candid limitations
 
-A prominent `↺ CLEAR ALL CHANGES` button appears in the editor header. Its confirmation reads **“Remove all blurs and start again on this video?”**. Confirming clears masks and scan results and persisted drafts, keeping the loaded source. Press **Undo** immediately to restore the previous edits once; the restored project is then saved normally. Existing individual deletion and Start Fresh remain.
+Included fixtures:
 
-### Audio tab and preview
+* `tests/regression/two-person-crossing-10s.mp4` — 1280×720, 30 fps, 10s, grey background, a 360² astronaut moving right at 90 px/s (y=120), and a 360² cameraman moving left at 90 px/s (y=330), composited on top, with 440 Hz AAC audio.
+* `tests/regression/realistic-speech-music-10s.mp4` — synthesized narration over drums, bass and changing triad chords, 10 s, AAC. Reference WAVs `realistic-*` enable energy measurements.
+* `tests/regression/v16-identity.test.mjs` — a simulated RGB-composite crossing tests Hungarian association and torso colour signatures.
+* `tests/regression/v16-precision.test.mjs` — 300 ground-truth pose-mask simulations test rejection of cameraman-only pixels.
+* `tests/regression/v16-audio.test.mjs` — YAMNet score parsing, risk muting, ≥224 ms speech gate. **Does not execute the neural models**.
+* Existing tests for time-limited masks, tracking, service worker, share-target, VAD/DSP and worker handshake still pass. Some previous release-specific tests expect exact historical versions 1.4/1.5 and are kept for audit, not counted as current-release tests.
 
-The editor has **Visual** and **Audio** tabs, *before* export:
+**Actual result of deterministic simulations:** 300/300 pose-mask frames have a visible astronaut mask and zero mask pixels within cameraman-only regions; 0/300 synthetic identity swaps. **Actual Google models have not been run here** so neither result is an assertion of the real acceptance target. The synthetic audio mix has RMS ~0.0924 music-only (0–2.5s), ~0.0907 background music beneath speech (2.5–6.5s), ~0.0918 music-only (6.5–10s). Real Quick/Best/Studio post-separation energy and before/after YAMNet scores are **not measured**; do not invent numbers.
 
-- **Keep original audio:** Preserves original audio, using the existing WebCodecs AAC / ffmpeg.wasm fallback.
-- **No audio:** Final MP4 contains **no audio stream**, not an encoded silent stream. If WebCodecs is unsupported, the FFmpeg fallback uses `-an`.
-- **Remove music, keep speech:** Requires user-initiated on-device processing. A Worker loads a speech detector plus a voice-separation model, removes detected non-speech intervals, then hands the generated PCM to the **same existing MP4 video exporter** for local AAC encoding or clean-WAV FFmpeg muxing. If cleaning or muxing fails, export is blocked: the original music is **never silently substituted**.
+## Android acceptance checks
 
-Audio tab controls: **Quick / Best**, a 3-stop **Gentle / Strong / Maximum slider**, optional **Strict — mute suspect intervals even under speech** (may remove speech), visible model download sizes, backend (WebGPU/WASM), progress, Cancel, and **A/B original vs cleaned** five-second previews. The audio selection is shown on the MP4 export card. Export UI still enforces the user's existing explicit “I checked the result” confirmation.
+1. Upload `two-person-crossing-10s.mp4`, tap astronaut at 0 s, Track →. Scrub 0, 4, 5.5, 9 s and export. The selected astronaut should remain covered and the cameraman should return fully visible when not overlapping. Inspect both the **pre-encode rendered canvas** and exported MP4. Require zero changed cameraman-only pixels in the canvas; lossy H.264 re-encoding may cause small pixel differences even outside masks, so the MP4 comparison needs a compression tolerance. Report missed astronaut frames and any visible cameraman masking. Tap **Don't cover** on the cameraman as an additional safeguard.
+2. Run Find All People; inspect both identities before applying Cover. If they are swapped, press the identity review dialog, correct and re-run.
+3. For `realistic-speech-music-10s.mp4`, test Quick → Best → Studio (optional on powerful desktop). Compare A/B, open Music check strip, record remaining risk scores, and test No audio. Listen for chopped syllables and musical bleed; never assume the classifier is a guarantee.
+4. Verify original v1.5.1 MP4 AAC playback/WhatsApp compatibility, PWA install, service-worker update, local-project restoration and export-review gate.
 
-**Limitations:** MDX models isolate *vocals*, not religiously classify music, and may retain instruments or remove speech. Silero VAD can miss quiet speech or treat singing as vocal content. The strict mode uses **non-voice residual energy**, NOT a separately trained music classifier; it can wrongly mute speech. **There is no scientifically justified 100% guarantee** that a cleaned track has no music. Listen to the complete processed audio before sharing. **No audio** remains the safest available option. Most Android devices will take significantly longer than real time to separate longer audio; 120 s maximum, Best reduced to 45 s on devices reporting ≤4 GB RAM. Short clips recommended.
+## Privacy / scope
 
-### Exact pinned models, size, licence and sources
-
-All models are fetched directly by the Worker only after the user presses **Download model & clean audio**; results are locally SHA-256 checked on first download and stored in CacheStorage `halalframe-audio-models-v1.5` for subsequent use offline. Model weights are **not packaged in the small ZIP**. Model metadata and immutable URLs are in `js/audio/models.js`.
-
-| Model/engine | Use | Remote weight size | Reported licence | Immutable origin |
-|---|---|---:|---|---|
-| Silero VAD ONNX | Speech activity; 16 kHz, 512-sample steps + 64 context | ~2.33 MB | MIT | [snakers4/silero-vad, commit 60b7ffa](https://github.com/snakers4/silero-vad/tree/60b7ffa243625ebdc1070275a29f18c87843786a) |
-| **Quick** UVR MDXNET 9482 ONNX | Vocals vs accompaniment | 29,704,436 bytes (~29.7 MB decimal) | MIT-licensed HF model repository | [Politrees/UVR_resources — MDXNet/UVR_MDXNET_9482.onnx](https://huggingface.co/Politrees/UVR_resources/blob/main/models/MDXNet/UVR_MDXNET_9482.onnx) at `8cc4418db60d96e501f42889370b8bf3eb6df2d2` |
-| **Best** UVR MDX-NET Voc FT ONNX | Larger vocal separation model | 66,762,490 bytes (~66.8 MB decimal) | MIT-licensed HF model repository | [Politrees/UVR_resources — MDXNet/UVR-MDX-NET-Voc_FT.onnx](https://huggingface.co/Politrees/UVR_resources/blob/main/models/MDXNet/UVR-MDX-NET-Voc_FT.onnx) at same commit |
-| ONNX Runtime Web | Local WebGPU, with WASM fallback | Browser engine + wasm (CDN) | MIT | `onnxruntime-web@1.22.0` via jsDelivr |
-
-**Deliberate model choice:** Quick uses a **29.7 MB MDX-Net vocal separator**, not DeepFilterNet3. DeepFilterNet's complete native signal chain isn't supplied as a single directly usable browser ONNX model in this app. The Quick and Best models here are both *vocal-isolation* models, with verified Hugging Face file records, SHA-256s and pinned revision. **Verification of file existence and hashes is not equivalent to successful model execution on Android**. The licence noted above is the host repository's MIT declaration; verify all upstream weight provenance/licence obligations before wider commercial advertising distribution.
-
-**Important hosting/CORS constraint:** GitHub Pages is a static host. Third-party model URLs must permit CORS and large cross-origin streaming requests. If a host blocks the browser, this release shows a failure, never a fake successful result. The engine can be reconfigured to vend weights as static files on GitHub Pages (no backend) if permitted by redistribution terms and repository limits.
-
-### Audio pipeline detail
-
-`js/audio/music-worker.js` (ES module worker) starts with a synchronous ready handshake, then loads `onnxruntime-web@1.22.0`, negotiates WebGPU→WASM, verifies and caches weights, resamples source audio to 16 kHz for Silero VAD, runs speech scoring, applies a padded/smoothed time gate, and resamples stereo to 44.1 kHz for MDX-Net STFT. Quick: `4096`-point FFT, `[1,4,2048,256]` input; Best: `6144`-point FFT, `[1,4,3072,256]` input. Outputs are inverse-STFT'd, crossfaded, filtered to detected speech, and handed back as transferable buffers. `js/audio/dsp.js` implements the STFT/iSTFT and resampling. Worker cancellation terminates model operations; no server execution.
-
-The visual display is not coupled to cleaning progress, and the original photo/video remains on-device. Videos are not modified in their source file. In the optional cleaned export mode the AAC encoder uses **cleaned PCM**, not original audio. On unsupported AAC WebCodecs it may fall back to local FFmpeg with a **cleaned WAV** input; if that fails, it must error rather than leak original music.
-
-### Installable app and artwork
-
-All visual branding reuses the approved image. The app icon is an isolated **lime frame glyph on charcoal** from the approved logo, with safe padding. New PNGs: `assets/icon-{48,72,96,128,192,256,384,512}.png`, `assets/icon-maskable-512.png` (mark contained inside the centre maskable safe zone), `assets/apple-touch-icon.png` (180×180), `assets/favicon-32.png`, plus `assets/screenshot-{welcome,editor,audio}.png` at 390×844. `manifest.json` includes stable identity, standalone display, app category/description, icons, Android Share Target, and three narrow screenshots. `sw.js` caches app shell/version 1.5, optional ONNX assets after first use, and retains the pinned MediaPipe cache.
-
-## Regression tests and how to verify on Android
-
-Run from repo root:
-
-```bash
-node tests/regression/tracker.test.mjs
-node tests/regression/v13-safety.test.mjs
-node tests/regression/v13-worker.test.mjs
-node tests/regression/v14-share-target.test.mjs
-node tests/regression/v15-release.test.mjs
-node tests/regression/v15-audio.test.mjs
-ffprobe -v error -show_streams tests/regression/speech-music-regression-10s.mp4
-```
-
-A 10-second **speech plus synthetic musical loop** fixture is included at `tests/regression/speech-music-regression-10s.mp4`, and separate reference WAVs at `tests/regression/speech-reference.wav`, `music-reference.wav`, and `speech-music-mix.wav`. Run `python tests/regression/make_audio_regression.py` to recreate with system FFmpeg and `espeak`; see test report for simulated energy measurements. They do **not** measure the actual neural model output. For genuine validation, install on Android Chrome, open that video, choose Audio → Remove music → Quick → Process, compare voice against original, repeat with Best, and play the exported 720p MP4 locally and in WhatsApp. Also test **No audio** and verify the MP4 has no audio track using a media inspector or FFprobe on a desktop. For installation, check the home-screen icon, splash and Share-to-HalalFrame. Report CPU/memory and any console errors.
-
-**GitHub Pages upgrade:** Upload everything, not only the modified files, over v1.4 and commit. The service worker uses `?v=1.5` and network-first shell fetch. After deployment, visit `https://adhkarlyaus.github.io/halalframe/?v=1.5`; if an installed app has old icons, reinstall its home-screen icon. No access to the GitHub account is assumed and this ZIP is not live until the user deploys it.
-
-Read `tests/TEST_REPORT.md` for exact Pass/Simulation/Not Verified distinctions.
-
-
-## Exact changed-file inventory versus v1.4
-
-**Modified (11):**
-`README.md`, `assets/icon-192.png`, `assets/icon-512.png`, `css/styles.css`, `index.html`, `js/engine/export.js`, `js/main.js`, `js/state.js`, `manifest.json`, `sw.js`, `tests/TEST_REPORT.md`.
-
-**Added (24):**
-`assets/apple-touch-icon.png`, `assets/favicon-32.png`, `assets/icon-128.png`, `assets/icon-256.png`, `assets/icon-384.png`, `assets/icon-48.png`, `assets/icon-72.png`, `assets/icon-96.png`, `assets/icon-maskable-512.png`, `assets/screenshot-audio.png`, `assets/screenshot-editor.png`, `assets/screenshot-welcome.png`, `js/audio/dsp.js`, `js/audio/models.js`, `js/audio/music-worker.js`, `js/ui/audio-panel.js`, `tests/regression/make_audio_regression.py`, `tests/regression/music-reference.wav`, `tests/regression/speech-music-mix.wav`, `tests/regression/speech-music-regression-10s.mp4`, `tests/regression/speech-reference.wav`, `tests/regression/speech-source.wav`, `tests/regression/v15-audio.test.mjs`, `tests/regression/v15-release.test.mjs`.
-
-**Removed:** None. The original `assets/logo.png`, tracking, segmentation and timeline implementation were not modified.
+Static files only; no app backend, tracking server, account or paid API. First-run model downloads must succeed. No external social-media downloader is provided. If a model cannot initialize, the user can still use manual box drawing and fully silent export.
