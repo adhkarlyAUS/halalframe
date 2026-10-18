@@ -113,7 +113,7 @@ async function openFile(file){
     $('viewer-empty').classList.add('hidden');$('editor').classList.remove('hidden');
     $('upload-panel').classList.add('hidden');$('new-file').classList.remove('hidden');
     $('media-details').textContent=`${info.width} × ${info.height} · ${kind==='photo'?'Still photo':seconds(info.duration)} · ${(file.size/1024/1024).toFixed(1)} MB`;
-    $('fps-controls').classList.toggle('hidden',kind==='photo');$('fps-input').value='auto';frameTimes=[];lastMeasuredMediaTime=null;$('review-ack').checked=false;
+    $('fps-controls').classList.toggle('hidden',kind==='photo');$('fps-input').value='auto';$('tracking-accuracy').value=info.duration<30?'best':'fast';frameTimes=[];lastMeasuredMediaTime=null;$('review-ack').checked=false;
     $('timeline-card').classList.toggle('hidden',kind==='photo');
     $('video-export').classList.toggle('hidden',kind==='photo');$('photo-export').classList.toggle('hidden',kind!=='photo');
     $('audio-toggle').disabled=kind==='photo';hiddenVideo.muted=false;$('audio-toggle').textContent='🔊';
@@ -193,7 +193,7 @@ async function runTracking(direction){
   trackingActive=true;hiddenVideo.pause();
   try{
     await ai.init();
-    await trackDirection({video:hiddenVideo,project,concealment:c,ai,direction,checkEvery:Number($('check-interval').value),signal:controller.signal,
+    await trackDirection({video:hiddenVideo,project,concealment:c,ai,direction,checkEvery:Number($('check-interval').value),accuracy:$('tracking-accuracy').value,signal:controller.signal,
       onProgress:(p,t)=>progress(p,`${Math.round(p*100)}% · ${seconds(t)} · ${c.track.length} positions`),
       onFrame:(t,boxes)=>{aiBoxes=boxes;render();},onReview:askTracking});
     toast(`Tracking completed: ${c.track.length} saved positions. Review before sharing.`);
@@ -209,7 +209,7 @@ async function runScan(coverAll=false){
       const boxes=await ai.detect(media,0,project.video.fps);
       scanResults=boxes.map((b,i)=>({id:`person-${i+1}`,label:`Person ${i+1}`,thumbnail:personThumbnail(media,b),track:[{t:0,...b,source:'ai'}],startTime:0,endTime:0}));
     }else{
-      scanResults=await findAllPeople({video:hiddenVideo,project,ai,signal:controller.signal,onProgress:(p,t,count)=>progress(p,`${Math.round(p*100)}% · ${seconds(t)} · ${count} tracks`) });
+      scanResults=await findAllPeople({video:hiddenVideo,project,ai,accuracy:$('tracking-accuracy').value,signal:controller.signal,onProgress:(p,t,count)=>progress(p,`${Math.round(p*100)}% · ${seconds(t)} · ${count} tracks`) });
     }
     endBusy();render();
     if(coverAll){applyScan(scanResults);toast(`Added ${scanResults.length} person tracks. Review identity changes.`);}
@@ -222,7 +222,7 @@ function showScan(){const list=$('scan-list');list.replaceChildren();$('scan-all
   for(const tr of scanResults){const label=document.createElement('label');label.className='scan-person';
     const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.value=tr.id;
     const thumb=document.createElement('img');thumb.className='thumb';thumb.alt=tr.label+' at initial detection';thumb.src=tr.thumbnail;
-    const info=document.createElement('div');const name=document.createElement('strong');name.textContent=tr.label;const sub=document.createElement('span');sub.className='dim';sub.textContent=`${seconds(tr.startTime)}–${seconds(tr.endTime)} · ${tr.track.length} samples`;info.append(name,sub);label.append(cb,thumb,info);list.append(label);
+    const info=document.createElement('div');const name=document.createElement('strong');name.textContent=tr.label;const sub=document.createElement('span');sub.className='dim';sub.textContent=`${seconds(tr.startTime)}–${seconds(tr.endTime)} · ${tr.track.length} samples${tr.reviewGaps?.length?' · Review bridged gap':''}`;info.append(name,sub);label.append(cb,thumb,info);list.append(label);
   }
   $('scan-modal').classList.remove('hidden');
 }
@@ -291,7 +291,7 @@ $('preview-mask').onchange=()=>render();
 $('start-time').onchange=e=>editSelection('startTime',e.target.value);$('end-time').onchange=e=>editSelection('endTime',e.target.value);
 $('whole-video').onclick=()=>{const c=selected();if(!c)return;c.startTime=0;c.endTime=project.video.duration;snapshot();toast('Whole-video range explicitly applied.');};
 $('undo').onclick=()=>restore(history.undo());$('redo').onclick=()=>restore(history.redo());
-$('debug').onchange=render;
+$('debug').onchange=()=>{$('self-check-tools').classList.toggle('hidden',!$('debug').checked);render();};
 $('jpg-export').onclick=async()=>{if(kind!=='photo')return;if(!$('review-ack').checked){toast('Review your image and tick the acknowledgement before export.');return;}
   const controller=beginBusy('Exporting photo','Applying masks…');try{const blob=await exportPhoto(media,project,{type:'image/jpeg',quality:.88,maskCache,ai});downloadBlob(blob,`${project.video.fileName.replace(/\.[^.]+$/,'')}-halalframe.jpg`);}catch(e){toast(e.message);}finally{endBusy();}};
 $('png-export').onclick=async()=>{if(kind!=='photo')return;if(!$('review-ack').checked){toast('Review your image and tick the acknowledgement before export.');return;}
