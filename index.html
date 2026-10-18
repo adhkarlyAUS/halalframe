@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#17191b"><meta name="description" content="HalalFrame by Adhkarly — private, on-device video concealment editor.">
+<title>HalalFrame v1.1 — An Adhkarly Product</title>
+<link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="assets/icon-192.png">
+<link rel="icon" href="assets/logo.png" type="image/png"><link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<div id="file-warning"><img src="assets/logo.png" alt="HalalFrame"><h1>Open HalalFrame over HTTPS</h1><p>This project uses JavaScript modules, on-device AI and a service worker. Opening <code>index.html</code> directly from a file manager can block those features. Upload the ZIP contents to GitHub Pages or Netlify Drop and open the HTTPS address.</p><p>Your videos and photos will still stay on your device.</p></div>
+<script>if(location.protocol==='file:')document.documentElement.classList.add('local-file');</script>
+<header class="topbar"><div class="wrap head-inner">
+  <img src="assets/logo.png" alt="HalalFrame — An Adhkarly Product" class="logo">
+  <div class="head-right"><span class="privacy-pill"><span class="pulse"></span> ON YOUR DEVICE</span><span id="offline-status" class="offline-status">AI first download required</span><button id="help-btn" class="icon-btn" title="How it works" aria-label="Help">?</button></div>
+</div></header>
+<main class="wrap">
+  <section class="intro"><div class="eyebrow">FREE · PRIVATE · NO SIGN-IN</div><h1>Conceal with precision.</h1><p>Mask people and selected regions at specific moments — and keep your media on your device.</p></section>
+  <section class="upload-card" id="upload-panel">
+    <div class="upload-content"><div class="upload-icon">↥</div><div><h2>Start with a photo or video</h2><p>Choose a local MP4, WebM, MOV, JPG, PNG or WebP file.</p></div></div>
+    <label class="btn primary file-btn" for="file-input">Choose a file <span>↗</span></label><input id="file-input" type="file" accept="video/*,image/*" hidden>
+    <div class="micro">Your media is not uploaded. The optional AI model downloads from Google the first time you use it. All editing runs in this browser.</div>
+  </section>
+  <section id="editor" class="editor hidden" aria-label="Video editor">
+    <div class="editor-header"><div><div class="eyebrow">THE EDITOR</div><h2 id="filename">Untitled project</h2><span id="media-details" class="dim"></span><div id="fps-controls" class="fps-controls hidden"><label for="fps-input">Video FPS</label><select id="fps-input"><option value="auto">Auto (30 until measured)</option><option value="24">24</option><option value="25">25</option><option value="30">30</option><option value="50">50</option><option value="60">60</option></select></div></div><button id="new-file" class="btn subtle">Change file</button></div>
+    <div class="editor-grid">
+      <div class="edit-left">
+        <div class="viewer-shell"><canvas id="preview" aria-label="Video preview. Tap a person or draw a rectangle using the controls below."></canvas><div class="viewer-badge" id="preview-badge">PREVIEW</div><button id="temporary-reveal" class="reveal-source hidden" type="button">Temporarily show original</button><div id="viewer-empty" class="viewer-empty">Ready</div></div>
+        <video id="source-video" playsinline preload="auto" style="display:none"></video>
+        <div class="transport"><button id="back-sec" class="circle" title="Back one second">−1s</button><button id="back-frame" class="circle" title="Back one frame">‹</button><button id="play" class="play-btn" aria-label="Play or pause">▶</button><button id="next-frame" class="circle" title="Forward one frame">›</button><button id="next-sec" class="circle" title="Forward one second">+1s</button><button id="audio-toggle" class="circle" title="Toggle source audio">🔊</button><span class="time" id="time-display">00:00.00 / 00:00.00</span></div>
+        <div class="scrubber-wrap"><input id="scrubber" type="range" min="0" max="10" step="0.0333" value="0" aria-label="Seek timeline"></div>
+        <div id="timeline-card" class="timeline-card"><div class="section-head"><h3>Concealment timeline</h3><span class="dim tiny">Drag bar ends to set visibility</span></div><div id="timeline-lanes" class="lanes"></div><div class="hint">Each bar only covers its own start–end interval. Dots mark saved positions.</div></div>
+      </div>
+      <aside class="controls">
+        <div class="control-card"><h3>1 · Find or select</h3>
+          <div class="button-grid"><button id="find-people" class="btn primary">◎ Find all people</button><button id="cover-everyone" class="btn secondary">Cover everyone</button></div>
+          <div class="mode-group" role="group" aria-label="Selection method"><button class="mode selected" id="mode-select">☝ Tap person</button><button class="mode" id="mode-draw">▣ Draw new box</button><button class="mode" id="mode-key">◆ Add keyframe</button></div>
+          <p class="hint" id="mode-help">Pause the video, then tap someone to create a tracked concealment.</p>
+          <div class="dim tiny" id="ai-status">AI loads only when you request detection.</div>
+        </div>
+        <div class="control-card"><div class="section-head"><h3>2 · Selected region</h3><button id="delete-mask" class="text-btn danger" disabled>Delete</button></div>
+          <div id="no-selection" class="empty-selection">Select or draw a region to edit its settings.</div>
+          <div id="selection-panel" class="hidden">
+            <label class="field">Label<input id="mask-label" type="text" maxlength="55"></label>
+            <div class="two-cols"><label class="field">Effect<select id="effect"><option value="black">Solid black</option><option value="pixelate">Pixelate</option><option value="blur">Blur</option><option value="brand">HalalFrame</option></select></label><label class="field">Shape<select id="shape"><option value="box">Box</option><option value="outline">Person outline</option><option value="skin">Exposed skin</option><option value="hair">Hair only</option></select></label></div>
+            <div class="two-cols"><label class="field">Strength<input id="strength" type="range" min="3" max="60" step="1"></label><label class="field">Padding <span id="padding-label">12%</span><input id="padding" type="range" min="0" max="35" step="1"></label></div>
+            <div class="two-cols"><label class="field">Feather <span id="feather-label">0px</span><input id="feather" type="range" min="0" max="24" step="1" value="0"></label><label class="field">Safety margin <span id="safety-label">8px</span><input id="safety-margin" type="range" min="0" max="40" step="1" value="8"></label></div>
+            <label class="check"><input id="include-face" type="checkbox"> Include face skin when using Skin shape</label>
+            <div class="two-cols"><label class="field">Start (s)<input id="start-time" type="number" min="0" step="0.01"></label><label class="field">End (s)<input id="end-time" type="number" min="0" step="0.01"></label></div>
+            <button id="whole-video" class="btn outline small">Apply to whole video</button>
+            <div class="two-cols"><button id="track-forward" class="btn secondary">Track →</button><button id="track-backward" class="btn secondary">← Track</button></div>
+            <label class="field">Ask me every<select id="check-interval"><option value="0">Only when uncertain</option><option value="2">2 seconds</option><option value="5">5 seconds</option></select></label>
+          </div>
+          <div class="undo-row"><button id="undo" class="btn subtle small" disabled>↶ Undo</button><button id="redo" class="btn subtle small" disabled>↷ Redo</button></div>
+        </div>
+        <div class="control-card"><h3>3 · Check and export</h3><p class="hint">Preview before sharing. AI may miss frames or people. Use manual corrections where needed.</p>
+          <label class="check"><input type="checkbox" id="debug"> Show AI debug information</label>
+          <label class="check"><input type="checkbox" id="preview-mask"> Preview precise masks in lime</label>
+          <div class="dim tiny" id="model-test-status">Self-check: not run yet.</div><button class="text-btn" id="run-self-check">Run AI self-check</button>
+          <label class="check review-ack"><input type="checkbox" id="review-ack"> I have checked the result and understand AI can miss content.</label>
+          <div id="photo-export" class="hidden"><div class="two-cols"><button id="jpg-export" class="btn primary">Save JPG</button><button id="png-export" class="btn secondary">Save PNG</button></div></div>
+          <div id="video-export" class="export-box hidden">
+            <label class="field">Quality &amp; size<select id="export-preset"><option value="720">Smart export · 720p (recommended)</option><option value="1080">1080p · HD</option><option value="original">Original resolution</option></select></label>
+            <div id="export-estimate" class="dim tiny" aria-live="polite">Select a video to see the estimated size.</div>
+            <button id="mp4-export" class="btn primary block">Export MP4 + audio</button>
+            <div id="export-result" class="export-result hidden"><strong id="export-result-title">Export complete</strong><p class="hint" id="export-result-message"></p><div class="two-cols"><button id="download-video" class="btn secondary">Download</button><button id="share-video" class="btn secondary">Share</button></div></div>
+            <p class="hint">H.264 + AAC where supported. MP4/audio fallback downloads FFmpeg (~32 MB). Never share without reviewing every frame.</p>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </section>
+  <section class="discover-card"><div class="discover-label">ALSO FROM OUR DEVELOPERS</div><div class="discover-wordmark"><span>adhkar</span><span class="discover-ly">ly</span></div><p>Daily adhkar, Qur'an, du'as and Islamic learning — built by the Adhkarly team.</p><div class="discover-actions"><button class="btn subtle" disabled title="App link not configured">Android · Coming soon</button><button class="btn subtle" disabled title="App link not configured">iPhone · Coming soon</button><button class="btn subtle" disabled title="App link not configured">Web · Coming soon</button></div></section>
+  <section class="about-grid"><article class="info-card"><h3>Private by design</h3><p>Your photo or video remains in your browser tab. No accounts, servers, API keys or uploaded media. AI models must download once before detection works.</p></article><article class="info-card"><h3>Before you share</h3><p>AI can miss a person, a frame or exposed awrah. Review everything manually. Nothing in this app guarantees religious compliance.</p><button id="ruling-open" class="text-btn">Read the reminder ↗</button></article></section>
+  <footer class="footer"><div>HALALFRAME v1.1 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · Discover Adhkarly (links coming soon)</p></footer>
+</main>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div id="busy" class="busy hidden" role="status" aria-live="polite"><div class="busy-inner"><div class="spinner"></div><h3 id="busy-title">Processing</h3><div id="busy-copy" class="dim">Please wait…</div><div class="progress-track"><div id="busy-progress" class="progress-fill"></div></div><button id="cancel-task" class="btn outline">Cancel</button></div></div>
+<div id="tutorial" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-label="First-run guide"><div class="modal tutorial-card"><div class="eyebrow lime">HALALFRAME · QUICK START</div><div class="tutorial-art" id="tutorial-art">◎</div><h2 id="tutorial-title">Tap a person</h2><p id="tutorial-text">Pause the video and tap a person to select them, or draw a box.</p><div class="modal-buttons"><button id="tutorial-skip" class="btn outline">Skip</button><button id="tutorial-next" class="btn primary">Next →</button></div></div></div>
+<div id="review-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="review-title"><div class="modal"><div class="eyebrow lime">TRACKING NEEDS YOUR HELP</div><h2 id="review-title">Check this frame</h2><p id="review-description"></p><img id="review-shot" alt="Current video frame for tracking review" class="review-image"><div class="modal-buttons"><button id="review-continue" class="btn primary">Keep going</button><button id="review-fix" class="btn secondary">Fix box</button><button id="review-end" class="btn outline">End concealment here</button><button id="review-skip" class="btn subtle">Skip ahead</button></div></div></div>
+<div id="scan-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="scan-title"><div class="modal scan-modal"><div class="section-head"><h2 id="scan-title">People found</h2><button id="scan-close" class="icon-btn" aria-label="Close">×</button></div><p>Select people to conceal. IDs are estimated and may change when people cross. Review the result.</p><label class="check"><input type="checkbox" id="scan-all" checked> Cover everyone found</label><div id="scan-list" class="scan-list"></div><button id="scan-apply" class="btn primary block">Conceal selected people</button></div></div>
+<div id="info-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="info-title"><div class="modal"><div class="section-head"><h2 id="info-title">Before you share</h2><button id="info-close" class="icon-btn" aria-label="Close">×</button></div><div id="info-content" class="info-copy"></div></div></div>
+<div id="mask-menu" class="menu hidden"><button id="mask-duplicate">Duplicate region</button><button id="mask-delete-menu">Delete region</button></div>
+<script type="module" src="js/main.js"></script>
+</body></html>

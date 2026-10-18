@@ -1,0 +1,14 @@
+{
+  "name":"HalalFrame — An Adhkarly Product",
+  "short_name":"HalalFrame",
+  "description":"Private on-device photo and video concealment editor",
+  "start_url":"./index.html",
+  "scope":"./",
+  "display":"standalone",
+  "background_color":"#141617",
+  "theme_color":"#17191b",
+  "icons":[
+    {"src":"assets/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
+    {"src":"assets/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ]
+}

@@ -1,0 +1,20 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HalalFrame v1.1 QA Simulation</title><style>body{font-family:system-ui;background:#141617;color:#f1f3f1;max-width:740px;margin:30px auto;padding:15px}h1{font-size:23px}li{padding:9px;margin:7px 0;border:1px solid #555;border-radius:9px}li.pass{border-color:#b8f451;color:#b8f451}li.fail{border-color:#f68d8d;color:#f68d8d}canvas{width:200px;max-width:100%;border:1px solid #666}</style></head><body>
+<h1>HalalFrame v1.1 — Browser QA simulation</h1><p>Tests use synthetic person/class masks. Real MediaPipe and MP4/audio require separate real-device testing.</p><ul id="tests"></ul><canvas width="200" height="100" id="canvas"></canvas>
+<script type="module">
+import {createProject,newConcealment,addPoint,boxAt} from '../js/state.js';
+import {renderFrame} from '../js/engine/render.js';
+import {MaskCache,smoothMask} from '../js/engine/segmentation.js';
+const tests=document.getElementById('tests');function record(name,passed,detail){const li=document.createElement('li');li.className=passed?'pass':'fail';li.textContent=`${passed?'PASS':'FAIL'} — ${name}: ${detail}`;tests.append(li);}
+const source=document.createElement('canvas');source.width=200;source.height=100;const sc=source.getContext('2d');sc.fillStyle='rgb(220,0,0)';sc.fillRect(0,0,200,100);
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});const pix=(x,y)=>ctx.getImageData(x,y,1,1).data[0];
+const project=createProject({duration:10,fps:30,width:200,height:100});const c=newConcealment(project,{x:.2,y:.1,w:.2,h:.7},5);c.padding=0;project.concealments.push(c);
+renderFrame(ctx,source,project,4);const a=pix(60,40);renderFrame(ctx,source,project,6);const b=pix(60,40);renderFrame(ctx,source,project,9);const d=pix(60,40);
+record('A — time-limited mask',a===220&&b===0&&d===220,`pixel values: ${a}/${b}/${d}`);
+const move=newConcealment(project,{x:0,y:0,w:.1,h:.1},2);addPoint(move,6,{x:.6,y:0,w:.1,h:.1});const x=boxAt(move,4).x;record('B — keyframe interpolation',Math.abs(x-.3)<1e-8,`midpoint x=${x}`);
+const photo=createProject({duration:0,fps:1,width:200,height:100});const skin=newConcealment(photo,{x:.1,y:0,w:.8,h:1},0);skin.shape='skin';skin.padding=0;skin.safetyMargin=0;photo.concealments=[skin];
+const fake={async segmentCrop(){const data=new Uint8Array(256*256);for(let y=65;y<180;y++)for(let x=105;x<150;x++)data[y*256+x]=2;return {width:256,height:256,data};}};
+const masks=new MaskCache();await masks.ensure({source,project:photo,time:0,c:skin,ai:fake});renderFrame(ctx,source,photo,0,{maskCache:masks});const inside=pix(96,40),outside=pix(36,40);
+masks.clear();await masks.ensure({source,project:photo,time:0,c:skin,ai:{async segmentCrop(){return {width:256,height:256,data:new Uint8Array(256*256)}}}});renderFrame(ctx,source,photo,0,{maskCache:masks});const empty=pix(36,40);
+record('E — skin-only and safe empty fallback',inside===0&&outside===220&&empty===0,`inside=${inside}, outside=${outside}, fallback=${empty}`);
+const p=new Uint8Array([255,0]),n=new Uint8Array([0,255]),smooth=smoothMask(n,p,.6);const diff=Math.abs(smooth[0]-p[0])+Math.abs(smooth[1]-p[1]);record('F — temporal blend reduces jumping',diff<510,`transition ${diff} vs raw 510; live flicker still unverified`);
+</script></body></html>
