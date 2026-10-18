@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#17191b"><meta name="description" content="HalalFrame by Adhkarly — private, on-device video concealment editor.">
-<title>HalalFrame v1.1 — An Adhkarly Product</title>
+<title>HalalFrame v1.2 — An Adhkarly Product</title>
 <link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="assets/icon-192.png">
 <link rel="icon" href="assets/logo.png" type="image/png"><link rel="stylesheet" href="css/styles.css">
 </head>
@@ -35,6 +35,7 @@
         <div class="control-card"><h3>1 · Find or select</h3>
           <div class="button-grid"><button id="find-people" class="btn primary">◎ Find all people</button><button id="cover-everyone" class="btn secondary">Cover everyone</button></div>
           <div class="mode-group" role="group" aria-label="Selection method"><button class="mode selected" id="mode-select">☝ Tap person</button><button class="mode" id="mode-draw">▣ Draw new box</button><button class="mode" id="mode-key">◆ Add keyframe</button></div>
+          <label class="field">Tracking accuracy<select id="tracking-accuracy"><option value="best">Best · every frame (default under 30 s)</option><option value="fast">Fast · 10 fps</option></select></label>
           <p class="hint" id="mode-help">Pause the video, then tap someone to create a tracked concealment.</p>
           <div class="dim tiny" id="ai-status">AI loads only when you request detection.</div>
         </div>
@@ -43,7 +44,7 @@
           <div id="selection-panel" class="hidden">
             <label class="field">Label<input id="mask-label" type="text" maxlength="55"></label>
             <div class="two-cols"><label class="field">Effect<select id="effect"><option value="black">Solid black</option><option value="pixelate">Pixelate</option><option value="blur">Blur</option><option value="brand">HalalFrame</option></select></label><label class="field">Shape<select id="shape"><option value="box">Box</option><option value="outline">Person outline</option><option value="skin">Exposed skin</option><option value="hair">Hair only</option></select></label></div>
-            <div class="two-cols"><label class="field">Strength<input id="strength" type="range" min="3" max="60" step="1"></label><label class="field">Padding <span id="padding-label">12%</span><input id="padding" type="range" min="0" max="35" step="1"></label></div>
+            <div class="two-cols"><label class="field">Strength<input id="strength" type="range" min="3" max="60" step="1"></label><label class="field">Padding <span id="padding-label">15%</span><input id="padding" type="range" min="0" max="35" step="1"></label></div>
             <div class="two-cols"><label class="field">Feather <span id="feather-label">0px</span><input id="feather" type="range" min="0" max="24" step="1" value="0"></label><label class="field">Safety margin <span id="safety-label">8px</span><input id="safety-margin" type="range" min="0" max="40" step="1" value="8"></label></div>
             <label class="check"><input id="include-face" type="checkbox"> Include face skin when using Skin shape</label>
             <div class="two-cols"><label class="field">Start (s)<input id="start-time" type="number" min="0" step="0.01"></label><label class="field">End (s)<input id="end-time" type="number" min="0" step="0.01"></label></div>
@@ -56,7 +57,7 @@
         <div class="control-card"><h3>3 · Check and export</h3><p class="hint">Preview before sharing. AI may miss frames or people. Use manual corrections where needed.</p>
           <label class="check"><input type="checkbox" id="debug"> Show AI debug information</label>
           <label class="check"><input type="checkbox" id="preview-mask"> Preview precise masks in lime</label>
-          <div class="dim tiny" id="model-test-status">Self-check: not run yet.</div><button class="text-btn" id="run-self-check">Run AI self-check</button>
+          <div class="debug-only hidden" id="self-check-tools"><div class="dim tiny" id="model-test-status">Self-check: not run yet.</div><button class="text-btn" id="run-self-check">Run AI self-check</button></div>
           <label class="check review-ack"><input type="checkbox" id="review-ack"> I have checked the result and understand AI can miss content.</label>
           <div id="photo-export" class="hidden"><div class="two-cols"><button id="jpg-export" class="btn primary">Save JPG</button><button id="png-export" class="btn secondary">Save PNG</button></div></div>
           <div id="video-export" class="export-box hidden">
@@ -72,7 +73,7 @@
   </section>
   <section class="discover-card"><div class="discover-label">ALSO FROM OUR DEVELOPERS</div><div class="discover-wordmark"><span>adhkar</span><span class="discover-ly">ly</span></div><p>Daily adhkar, Qur'an, du'as and Islamic learning — built by the Adhkarly team.</p><div class="discover-actions"><button class="btn subtle" disabled title="App link not configured">Android · Coming soon</button><button class="btn subtle" disabled title="App link not configured">iPhone · Coming soon</button><button class="btn subtle" disabled title="App link not configured">Web · Coming soon</button></div></section>
   <section class="about-grid"><article class="info-card"><h3>Private by design</h3><p>Your photo or video remains in your browser tab. No accounts, servers, API keys or uploaded media. AI models must download once before detection works.</p></article><article class="info-card"><h3>Before you share</h3><p>AI can miss a person, a frame or exposed awrah. Review everything manually. Nothing in this app guarantees religious compliance.</p><button id="ruling-open" class="text-btn">Read the reminder ↗</button></article></section>
-  <footer class="footer"><div>HALALFRAME v1.1 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · Discover Adhkarly (links coming soon)</p></footer>
+  <footer class="footer"><div>HALALFRAME v1.2 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · Discover Adhkarly (links coming soon)</p></footer>
 </main>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div id="busy" class="busy hidden" role="status" aria-live="polite"><div class="busy-inner"><div class="spinner"></div><h3 id="busy-title">Processing</h3><div id="busy-copy" class="dim">Please wait…</div><div class="progress-track"><div id="busy-progress" class="progress-fill"></div></div><button id="cancel-task" class="btn outline">Cancel</button></div></div>

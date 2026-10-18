@@ -1,5 +1,6 @@
-// HalalFrame 1.1. Local media is never sent to the service worker.
-const SHELL='halalframe-shell-v1.1',AI='halalframe-ai-v1.1';
+// HalalFrame 1.2. Local media is never sent to the service worker.
+// Preserve the existing pinned v1.1 model cache: changing tracking code must not redownload AI weights.
+const SHELL='halalframe-shell-v1.2',AI='halalframe-ai-v1.1';
 const ROOT=new URL('./',self.location.href);
 const SHELL_FILES=['./','index.html','manifest.json','css/styles.css','js/main.js','js/state.js','js/engine/ai.js','js/engine/render.js','js/engine/segmentation.js','js/engine/export.js','js/engine/ffmpeg-worker.js','js/engine/tracker.js','js/ui/canvas-input.js','js/ui/timeline.js','assets/logo.png','assets/icon-192.png','assets/icon-512.png','assets/test-person.jpg'];
 const PACKAGE='https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304';
