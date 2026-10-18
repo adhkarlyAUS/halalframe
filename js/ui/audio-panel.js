@@ -54,7 +54,7 @@ export class AudioPanel{
     $('audio-preview-clean').disabled=!this.cleaned;
     $('audio-preview-stop').disabled=!this.source;
     const report=$('music-report');if(report)report.classList.toggle('hidden',!this.musicCheck||!active);
-    const desc=this.mode==='original'?'Original sound is kept.':this.mode==='none'?'Completely silent MP4; no audio track is added.':this.cleaned?(this.musicCheck?.verified?'Voice processed · no high-confidence music found by classifier. Listen carefully.':'Voice processed · music check unverified or possible music remains. Review before export.'):'Process and verify voice first. No audio is always the safest option.';
+    const desc=this.mode==='original'?'Original sound is kept.':this.mode==='none'?'Completely silent MP4; no audio track is added.':this.cleaned?(this.musicCheck?.verified?'Voice processed · no flagged classifier segments. Listen carefully.':'Voice processed · music check unverified or possible music remains. Review before export.'):'Process and verify voice first. No audio is always the safest option.';
     $('audio-summary').textContent=desc;
     $('export-audio-summary').textContent=this.mode==='original'?'Audio: Original':this.mode==='none'?'Audio: None (silent)':'Audio: Voice processed'+(this.cleaned?(this.musicCheck?.verified?' · classifier check passed':' · music check incomplete'):' · process first');
     if(this.mode==='clean')$('audio-model-size').textContent=this.quality==='quick'?'First download: Silero 2.3 MB + Quick model 29.7 MB.':this.quality==='studio'?'Studio experimental: 181 MB HTDemucs; high memory, may be unsupported on GitHub Pages.':'First download: Silero 2.3 MB + Best model 66.8 MB. Higher memory use; slower on phones.';
@@ -174,12 +174,17 @@ export class AudioPanel{
           blocks:[{start:0,end:original.duration,before:0,after:1,speech:0,state:'risk'}],
           error:'YAMNet on-device check unavailable: '+error.message};
       }finally{this.verificationController=null;}
+      // Attribute this report to the ACTUAL model run, not the dropdown. Studio
+      // may automatically fall back to Best, and the report must say so.
+      const actualModel=output.model==='studio'?DEMUCS.name:(MODELS[output.model]?.name||String(output.model||'Unknown'));
+      this.musicCheck.modelUsed=actualModel;
+      this.musicCheck.strength=['Gentle','Strong','Maximum'][Number($('audio-strength').value)]||'Strong';
       const result=new AudioBuffer({numberOfChannels:decoded.length,length:decoded[0].length,sampleRate:output.sampleRate});
       decoded.forEach((ch,index)=>result.copyToChannel(ch,index));
       this.cleaned=result;
       this.showMusicReport();
       const qualityNote=output.studioWarning?' · Studio fell back to Best':'';
-      $('audio-progress-text').textContent=`Voice ${result.duration.toFixed(1)}s · speech ${output.speechPercent}% · Music check ${this.musicCheck.verified?'passed':'needs review'}${qualityNote}`;
+      $('audio-progress-text').textContent=`${actualModel} · ${this.musicCheck.strength} · speech ${output.speechPercent}% · Music check ${this.musicCheck.verified?'passed':'needs review'}${qualityNote}`;
       $('audio-progress').style.width='100%';this.toast('Audio ready. Listen to A/B preview and inspect the music-risk strip.');
       this.checkCache();
     }catch(e){
@@ -226,12 +231,13 @@ export class AudioPanel{
     if(!report||!strip||!description||typeof strip.replaceChildren!=='function')return;
     report.classList.toggle('hidden',!this.musicCheck);strip.replaceChildren();
     const check=this.musicCheck;if(!check)return;
-    description.textContent=check.error?'Music check unavailable: '+check.error:
-      check.verified?'No high-confidence music/instrument segments detected after processing. This is NOT a guarantee.':
-      `${check.remainingRisk} interval(s) remain suspicious. Red = possible music under speech. Listen before exporting or choose No audio.`;
+    const modelLabel=`Model used: ${check.modelUsed||'Unknown'}${check.strength?' · '+check.strength:''}. `;
+    description.textContent=modelLabel+(check.error?'Music check unavailable: '+check.error:
+      check.verified?'No music/instrument intervals flagged at the current conservative thresholds. NOT a guarantee.':
+      `${check.remainingRisk||0} red + ${check.remainingCaution||0} amber interval(s). Amber = possible instruments beneath speech; review manually or choose No audio.`);
     for(const item of check.blocks||[]){const segment=document.createElement('button');segment.type='button';
       segment.className='music-check-segment '+item.state;segment.style.flex=String(Math.max(.2,item.end-item.start));
-      segment.title=`${item.start.toFixed(1)}–${item.end.toFixed(1)}s · Original music ${(100*item.before).toFixed(0)}% · Remaining ${(100*item.after).toFixed(0)}%`;
+      segment.title=`${item.start.toFixed(1)}–${item.end.toFixed(1)}s · Original music ${(100*item.before).toFixed(0)}% · Remaining ${(100*item.after).toFixed(0)}% · Instrument ${(100*(item.instrument||0)).toFixed(0)}%`;
       segment.onclick=()=>{const video=this.getVideo();if(video){video.currentTime=item.start;video.pause();}this.preview('clean');};
       strip.append(segment);
     }

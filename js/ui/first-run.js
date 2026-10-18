@@ -5,7 +5,7 @@ const $=id=>document.getElementById(id);
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const SLIDES=[
   {label:'WELCOME',symbol:'',title:'Welcome to HalalFrame',description:'A simple, private way to conceal people and regions in photos and videos.'},
-  {label:'HOW IT WORKS',symbol:'steps',title:'Tap a person. Track. Export.',description:'Swipe to see each step. Tap a person, track their movement, inspect the timeline, then export.'},
+  {label:'HOW IT WORKS',symbol:'steps',title:'Tap a person. Track. Export.',description:'Tap a person, track their movement, review the timeline, then export. All three steps are shown below.'},
   {label:'YOUR PRIVACY',symbol:'privacy',title:'Everything stays on your phone',description:'No sign-in, no server and no uploaded media. Your videos and photos are processed in your browser. AI model files download on the first run.'},
   {label:'IMPORTANT DISCLAIMER',symbol:'!',title:'Before you begin',description:'Please understand the limitations of automatic concealment.'}
 ];
