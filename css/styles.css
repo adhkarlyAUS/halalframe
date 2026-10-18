@@ -196,3 +196,37 @@
  .onboard-step-card img{width:100%;max-width:100%;height:220px;max-height:220px;min-height:220px}
  .onboard-step-card figcaption{font-size:15px;white-space:normal}
 }
+
+/* v1.8 — three visible steps on narrow devices, no swipe-to-find controls. */
+@media (max-width:599px){
+  .onboard-visual.is-steps{
+    display:flex;flex-direction:column;align-items:stretch;justify-content:center;
+    width:min(100%,390px);max-width:390px;min-height:0;height:auto;
+    gap:8px;overflow:visible;scroll-snap-type:none;grid-auto-flow:unset;
+    margin:9px auto 12px;padding:0 4px;
+  }
+  .onboard-step-card{
+    display:flex;flex-direction:row;align-items:center;justify-content:flex-start;
+    width:100%;min-height:102px;max-width:100%;padding:1px 5px;
+    scroll-snap-align:none;gap:16px;
+  }
+  .onboard-step-card img{
+    width:124px;min-width:124px;max-width:124px;
+    height:104px;min-height:104px;max-height:104px;flex:none;
+    object-fit:cover;
+  }
+  .onboard-step-card figcaption{
+    flex:1;text-align:left;line-height:1.35;font-size:15px;font-weight:720;
+    white-space:normal;letter-spacing:-.01em;
+  }
+}
+@media (max-width:599px) and (max-height:730px){
+  .onboard-step-card{min-height:80px;gap:9px}
+  .onboard-step-card img{width:110px;min-width:110px;max-width:110px;height:78px;min-height:78px;max-height:78px}
+  .onboard-visual.is-steps{gap:2px;margin:3px auto 5px}
+  .onboard-step-card figcaption{font-size:13px}
+}
+/* Amber means a nonzero music/instrument classification under speech needs
+   review; it must never be displayed as a green "passed" status. */
+.music-check-segment.caution{background:#f2b950}
+.music-report-key i.caution{background:#f2b950}
