@@ -35,7 +35,7 @@ export class PersonAI {
       for(const [delegate,asset] of [['GPU',MODELS.detector16],['CPU',MODELS.detector16],['GPU',MODELS.detector32],['CPU',MODELS.detector32]]) {
         try{
           this.onStatus(`Loading person detector (${delegate})…`);
-          this.detector=await pkg.ObjectDetector.createFromOptions(vision,{baseOptions:{modelAssetPath:asset,delegate},runningMode:'VIDEO',scoreThreshold:0.35,categoryAllowlist:['person'],maxResults:40});
+          this.detector=await pkg.ObjectDetector.createFromOptions(vision,{baseOptions:{modelAssetPath:asset,delegate},runningMode:'VIDEO',scoreThreshold:0.18,categoryAllowlist:['person'],maxResults:40});
           this.delegate=delegate;break;
         }catch(e){error=e;}
       }
@@ -50,7 +50,7 @@ export class PersonAI {
     const pkg=await import(`${PACKAGE}/vision_bundle.mjs`);
     const vision=await pkg.FilesetResolver.forVisionTasks(`${PACKAGE}/wasm`);
     for(const asset of [MODELS.detector16,MODELS.detector32]){
-      try{this.detector=await pkg.ObjectDetector.createFromOptions(vision,{baseOptions:{modelAssetPath:asset,delegate:'CPU'},runningMode:'VIDEO',scoreThreshold:0.35,categoryAllowlist:['person'],maxResults:40});this.delegate='CPU';return;}
+      try{this.detector=await pkg.ObjectDetector.createFromOptions(vision,{baseOptions:{modelAssetPath:asset,delegate:'CPU'},runningMode:'VIDEO',scoreThreshold:0.18,categoryAllowlist:['person'],maxResults:40});this.delegate='CPU';return;}
       catch{}
     }
     throw new Error('No compatible MediaPipe CPU detector');
@@ -118,7 +118,7 @@ export class PersonAI {
   async selfCheck(image){
     await this.init();
     const boxes=await this.detect(image,0,1,{force:true});
-    return {detected:boxes.length,delegate:this.delegate,model:'EfficientDet Lite0',message:boxes.length?'Person detected on bundled test image':'No person detected on bundled test illustration; try a real photograph'};
+    return {detected:boxes.length,delegate:this.delegate,model:'EfficientDet Lite0',message:boxes.length?'Person detected on bundled test image':'Bundled illustration is not a reliable detector benchmark; test with a real photo'};
   }
 }
 export function pointInBox(x,y,b){return x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h;}
