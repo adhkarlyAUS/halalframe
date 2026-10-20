@@ -260,3 +260,14 @@
 
 .tracking-state{border:1px solid #6c6345;background:#363022;color:#f4dba1;font-size:11px;padding:10px 11px;border-radius:9px;margin-bottom:11px;line-height:1.5}
 .tracking-state.complete{border-color:#3c6c40;background:#1e3424;color:#c7f3bb}
+
+/* v1.11.1 — actionable, persistent uncertain-interval review */
+.review-gap-segment{position:absolute;z-index:4;top:0;height:100%;background:repeating-linear-gradient(125deg,#ffbb43ed 0 5px,#8b5e20 5px 9px);border:1px solid #ffdc83;border-radius:3px;cursor:pointer;min-width:6px;box-shadow:0 0 0 1px #2e2416;touch-action:manipulation}
+.review-gap-segment:focus-visible{outline:3px solid #fbd58b;outline-offset:2px}
+.gap-review-panel{background:#342c1e;border:1px solid #806434;border-radius:11px;padding:11px;margin:9px 0 13px}
+.gap-panel-title{color:#fce2a1;font-size:12px}
+.gap-review-list{display:grid;gap:7px;margin:10px 0}
+.gap-review-item{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#eadab1;font-size:11px}
+.gap-review-item .btn{flex-shrink:0}
+#gap-action-modal .modal-buttons,#coverage-block-modal .modal-buttons{grid-template-columns:repeat(2,minmax(0,1fr))}
+#gap-action-shot{max-height:240px}
