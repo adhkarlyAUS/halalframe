@@ -78,7 +78,7 @@ export async function supportedEncoderChoices({width=1280,height=720,fps=30}={})
   return result;
 }
 export const browserDiagnostics=(file,probe={},extra={})=>({
-  appVersion:'1.9',name:file?.name||'',fileBytes:file?.size||0,container:probe?.container||'unknown',
+  appVersion:'1.11',name:file?.name||'',fileBytes:file?.size||0,container:probe?.container||'unknown',
   codec:probe?.codec||'unknown',audioCodec:probe?.audioCodec||'unknown',bitDepth:probe?.bitDepth||'unknown',
   resolution:`${probe?.displayWidth||probe?.width||'?'}x${probe?.displayHeight||probe?.height||'?'}`,
   frameRate:probe?.fps||'unknown',rotation:probe?.rotation??'unknown',duration:probe?.duration??'unknown',

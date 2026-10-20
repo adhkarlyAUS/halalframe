@@ -15,10 +15,31 @@ export function pixelBox(box,padding,W,H){
 // this exact geometry, so their masks cannot diverge.
 export function concealmentRect(box,c,W,H){
   const r=pixelBox(box,c?.wholeFrame?0:(c?.padding??.12),W,H);
-  if(c?.shape!=='outline'||c?.wholeFrame)return r;
+  if(c?.shape!=='outline'||c?.wholeFrame)return boundedPersonRect(r,box,c,W,H);
   const extraTop=box.h*H*.30,extraSide=box.w*W*.10;
   const x=Math.max(0,r.x-extraSide),y=Math.max(0,r.y-extraTop);
-  return {x,y,w:Math.min(W-x,r.w+(r.x-x)+extraSide),h:Math.min(H-y,r.h+(r.y-y))};
+  return boundedPersonRect({x,y,w:Math.min(W-x,r.w+(r.x-x)+extraSide),h:Math.min(H-y,r.h+(r.y-y))},box,c,W,H);
+}
+export function relativePixelStep(boxHeightPx,strength=42){
+  return clamp(Math.round(Math.max(4,boxHeightPx/10)*(Math.max(3,strength)/42)),4,60);
+}
+// Limit AI-owned regions to their observed median person area. Manual boxes
+// and intentional Whole Frame are exempt. WeakMap keeps this O(1) per frame.
+const medianAreaCache=new WeakMap();
+function boundedPersonRect(r,box,c,W,H){
+  if(!c.precisionCritical||c.wholeFrame||c.manualRegion)return r;
+  let rec=medianAreaCache.get(c);
+  if(!rec||rec.len!==c.track?.length){
+    const areas=c.track.filter(p=>p.confidence>.18).map(p=>p.w*p.h).filter(a=>a>0).sort((a,b)=>a-b);
+    rec={len:c.track?.length,area:areas[Math.floor(areas.length/2)]||box.w*box.h};medianAreaCache.set(c,rec);
+  }
+  const maxArea=Math.min(.20*W*H,2*Math.max(.00001,rec.area)*W*H);
+  if(r.w*r.h<=maxArea)return r;
+  const f=Math.sqrt(maxArea/(r.w*r.h));
+  const w=Math.max(1,r.w*f),h=Math.max(1,r.h*f);
+  const focusX=(box.x+box.w/2)*W,focusY=(box.y+box.h*(c.shape==='outline'?.40:.5))*H;
+  const x=clamp(focusX-w/2,0,W-w),y=clamp(focusY-h/2,0,H-h);
+  return {x,y,w,h};
 }
 function maskImage(entry){
   size(maskCanvas,entry.width,entry.height);
@@ -27,7 +48,7 @@ function maskImage(entry){
   maskCtx.putImageData(img,0,0);
   return maskCanvas;
 }
-export function renderFrame(ctx,source,project,time,{debug=false,detections=[],draft=null,maskCache=null,previewMask=false}={}){
+export function renderFrame(ctx,source,project,time,{debug=false,detections=[],predictedBox=null,draft=null,maskCache=null,previewMask=false}={}){
   if(!project||!source)return;
   const W=ctx.canvas.width,H=ctx.canvas.height;
   ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,W,H);
@@ -45,7 +66,11 @@ export function renderFrame(ctx,source,project,time,{debug=false,detections=[],d
     size(effectCanvas,ew,eh);
     effectCtx.setTransform(1,0,0,1,0,0);effectCtx.clearRect(0,0,ew,eh);
     if(effect==='pixelate'){
-      const step=Math.max(3,Number(c.strength)||18);size(pixelBuffer,Math.ceil(ew/step),Math.ceil(eh/step));
+      // Pixel blocks scale with PERSON size; a small CCTV pedestrian must not
+      // inherit a 42px full-frame mosaic block. Strength remains adjustable.
+      const personPx=Math.max(1,b.h*H);
+      const step=relativePixelStep(personPx,c.strength||42);
+      size(pixelBuffer,Math.ceil(ew/step),Math.ceil(eh/step));
       const sw=source.videoWidth||source.naturalWidth||source.width||W,sh=source.videoHeight||source.naturalHeight||source.height||H;
       pixelCtx.imageSmoothingEnabled=true;pixelCtx.drawImage(source,r.x/W*sw,r.y/H*sh,r.w/W*sw,r.h/H*sh,0,0,pixelBuffer.width,pixelBuffer.height);
       effectCtx.imageSmoothingEnabled=false;effectCtx.drawImage(pixelBuffer,0,0,ew,eh);effectCtx.imageSmoothingEnabled=true;
@@ -88,6 +113,7 @@ export function renderFrame(ctx,source,project,time,{debug=false,detections=[],d
   if(debug){
     for(const d of detections){const r=pixelBox(d,0,W,H);ctx.strokeStyle='#f0ce70';ctx.lineWidth=2;ctx.strokeRect(r.x,r.y,r.w,r.h);ctx.fillStyle='#f0ce70';ctx.font='11px sans-serif';ctx.fillText(`${Math.round((d.confidence||0)*100)}%`,r.x,r.y-3);}
   }
+  if(debug&&predictedBox){const r=pixelBox(predictedBox,0,W,H);ctx.save();ctx.strokeStyle='#63e8ff';ctx.lineWidth=2;ctx.setLineDash([5,4]);ctx.strokeRect(r.x,r.y,r.w,r.h);ctx.setLineDash([]);ctx.fillStyle='#63e8ff';ctx.font='11px monospace';ctx.fillText('PREDICTED',r.x,Math.max(12,r.y-5));ctx.restore();}
   if(draft){const r=pixelBox(draft,0,W,H);ctx.strokeStyle='#b8f451';ctx.lineWidth=Math.max(2,W/650);ctx.setLineDash([8,5]);ctx.strokeRect(r.x,r.y,r.w,r.h);ctx.setLineDash([]);}
   ctx.restore();
 }

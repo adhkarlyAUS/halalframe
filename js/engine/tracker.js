@@ -1,5 +1,6 @@
 import {addPoint,clamp,normalizedBox} from '../state.js';
 import {canSequentialAnalyse,sequentialSampler} from './sequential-analysis.js';
+import {scanVideoOnce,scanResults,followTapFromCachedFrames} from './real-footage-tracker.js';
 import {appearanceSignature,appearanceSimilarity,hungarian,associationCost,MultiObjectAssociator,iou,poseBodySignature,poseSimilarity,rankIdentityCandidates,chooseIdentityCandidate} from './identity.js';
 
 // Analysis resolution is user-selectable; short clips default to every source frame.
@@ -183,7 +184,7 @@ export function reacquirePerson(anchor,candidates,velocity,delta,{lostFor=0}={})
   return {...top,confidence:Math.max(.51,Math.min(.82,top.score)),reacquired:true,ambiguous:false};
 }
 
-export async function trackDirection({video,file=null,project,concealment,ai,direction=1,checkEvery=0,accuracy='best',onProgress=()=>{},onReview=async()=>({action:'continue'}),onFrame=()=>{},signal}){
+async function legacyTrackDirection({video,file=null,project,concealment,ai,direction=1,checkEvery=0,accuracy='best',onProgress=()=>{},onReview=async()=>({action:'continue'}),onFrame=()=>{},signal}){
   if(direction!==1&&direction!==-1)throw new Error('Tracking direction must be +1 or -1');
   video.pause();const oldTime=video.currentTime;
   // Forward tracking uses sequential decode when supported; reverse tracking
@@ -445,7 +446,7 @@ function mergeTracks(tracks){
   return arr;
 }
 
-export async function findAllPeople({video,file=null,project,ai,accuracy='best',onProgress=()=>{},signal}){
+async function legacyFindAllPeople({video,file=null,project,ai,accuracy='best',onProgress=()=>{},signal}){
   video.pause();const originalTime=video.currentTime;
   const sampler=canSequentialAnalyse(file)?sequentialSampler(file,project,{signal}):null;
   const fps=analysisFPS(project,accuracy),dt=1/fps;
@@ -535,4 +536,49 @@ export async function findAllPeople({video,file=null,project,ai,accuracy='best',
     return {id:`person-${index+1}`,label:`Person ${index+1}`,track:tr.track,thumbnail:tr.thumbnail,identitySignature:tr.identitySignature||null,
       startTime:tr.track[0].t,endTime:tr.track.at(-1).t,reviewGaps:tr.reviewGaps||[]};
   });
+}
+
+// v1.11: both UI entry points consume a single sequential pass of EVERY frame.
+// Association uses the same ByteTrack motion-only two-stage Hungarian process
+// for all people; appearance can only assist a human re-identification review.
+export async function trackDirection({video,file=null,project,concealment,ai,direction=1,checkEvery=0,accuracy='best',onProgress=()=>{},onReview=async()=>({action:'continue'}),onFrame=()=>{},signal}){
+  if(!file)return legacyTrackDirection({video,file,project,concealment,ai,direction,checkEvery,accuracy,onProgress,onReview,onFrame,signal});
+  const fps=Math.max(1,Math.round(project.video.fps||30));
+  const scan=await scanVideoOnce({video,file,project,ai,seekFrame,signal,onProgress:(p,t,n)=>onProgress(p*.86,t,n)});
+  const tapTime=Number.isFinite(concealment.originalTapTime)?concealment.originalTapTime:
+    direction>0?concealment.track[0]?.t:concealment.track[0]?.t;
+  let anchorFrame=clamp(Math.round(tapTime*fps),0,scan.frames.length-1);
+  if(scan.frameTimes?.length){let best=Infinity;for(let i=0;i<scan.frameTimes.length;i++){const d=Math.abs(scan.frameTimes[i]-tapTime);if(d<best){best=d;anchorFrame=i;}}}
+  const seed=concealment.track.find(p=>Math.abs(p.t-tapTime)<.005)||concealment.track.reduce((a,b)=>Math.abs(a.t-tapTime)<Math.abs(b.t-tapTime)?a:b);
+  if(!seed)throw new Error('No selected person found to track');
+  const result=await followTapFromCachedFrames({scan,anchorFrame,anchorBox:seed,direction,signal,
+    onProgress:(p,t)=>onProgress(.86+.14*p,t),onFrame,
+    onReview:async data=>{
+      // A review prompt must display the ACTUAL time of uncertainty, not the
+      // initial tap frame. Seeking is allowed here once per review, never as
+      // part of the sequential 600-frame analysis loop.
+      await seekFrame(video,data.time,{signal}).catch(()=>{});
+      onFrame(data.time,data.detections,data.proposed);
+      const expectedThumb=concealment.thumbnail||null;
+      const candidateThumb=typeof document!=='undefined'&&data.proposed?personThumbnail(video,data.proposed):null;
+      return onReview({...data,expectedThumb,candidateThumb});
+    }});;
+  for(const point of result.points)addPoint(concealment,point.t,point,point.source||'ai',point.confidence??0);
+  concealment.reviewGaps ??= [];
+  for(const gap of result.reviewGaps)if(!concealment.reviewGaps.some(g=>Math.abs(g.from-gap.from)<.04&&Math.abs(g.to-gap.to)<.04))concealment.reviewGaps.push(gap);
+  if(result.stopped){
+    const last=direction>0?Math.max(...result.points.map(x=>x.t)):Math.min(...result.points.map(x=>x.t));
+    if(direction>0)concealment.endTime=last;else concealment.startTime=last;
+    concealment.userEnded=true;
+  }else if(direction>0)concealment.endTime=project.video.duration;
+  else concealment.startTime=0;
+  // Tracking history may legitimately end after visibility is lost. Do not
+  // extrapolate the last box across the entire clip or blur a stationary area.
+  onProgress(1,direction>0?project.video.duration:0);
+  return concealment;
+}
+export async function findAllPeople({video,file=null,project,ai,accuracy='best',onProgress=()=>{},signal}){
+  if(!file)return legacyFindAllPeople({video,file,project,ai,accuracy,onProgress,signal});
+  const scan=await scanVideoOnce({video,file,project,ai,seekFrame,signal,onProgress});
+  return scanResults(scan);
 }
