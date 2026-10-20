@@ -1,5 +1,6 @@
 import {createProject,newConcealment,addPoint,boxAt,clamp,clone,History,seconds,saveProject,loadSavedProject,clearSavedProject,migrateProjectEffects} from './state.js';
 import {renderFrame} from './engine/render.js';
+import {debugFrameForFile} from './engine/real-footage-tracker.js';
 import {MaskCache} from './engine/segmentation.js';
 import {appearanceSignature,iou} from './engine/identity.js';
 import {PersonAI,nearestPerson} from './engine/ai.js';
@@ -14,9 +15,11 @@ import {initFirstRun,initExportReview} from './ui/first-run.js';
 import {takeSharedFile} from './ui/share-target.js';
 import {AudioPanel} from './ui/audio-panel.js';
 import {isPersonSelection,needsFullTracking,finalizeFullTrack,applyCompleteScanTrack} from './engine/auto-coverage.js';
+import {openReviewGaps,markGapReviewed,finishCoverAtGap} from './engine/gap-review.js';
 const $=id=>document.getElementById(id);
 let project=null,media=null,kind='video',sourceURL=null,selectedId=null,tool='select',draft=null;
-let busyController=null,reviewResolve=null,fixResolve=null,aiBoxes=[],trackingActive=false,scanResults=[];
+let busyController=null,reviewResolve=null,fixResolve=null,gapEditor=null,aiBoxes=[],trackingActive=false,scanResults=[];
+let debugAnalysisPending=-1,lastDebugRequest=0;
 let lastFrameRendered=-1,toastTimer=null,saveTimer=null,frameCounter=0,fpsWindowStart=performance.now(),measuredFPS=0;
 let exportResult=null,sourceFile=null,videoProbe=null,pendingConversion=null,lastDiagnostic=null;
 const recentExports=[];const RECENT_LIMIT=4;let autoDownloadAttempts=0;const requestExportReview=initExportReview();const maskCache=new MaskCache();const maskTasks=new Set();
@@ -46,7 +49,16 @@ function render(){
   if(kind==='video'&&hiddenVideo.readyState<2)return;
   const t=currentTime();
   const displayed=temporaryReveal&&fixResolve?{...project,concealments:project.concealments.filter(c=>c.id!==selectedId)}:project;
-  renderFrame(ctx,media,displayed,t,{debug:$('debug').checked,detections:aiBoxes,draft,maskCache,previewMask:$('preview-mask').checked});
+  const debug=$('debug').checked,frameIndex=Math.round(t*project.video.fps);
+  const cached=debug?ai.frameCache.get(frameIndex):null;
+  const overlay=debug?debugFrameForFile(sourceFile,frameIndex,selected()?boxAt(selected(),t):null):null;
+  // Always show CURRENT-frame detections. Never reuse detections captured at a
+  // different playhead time (the original debug overlay did exactly that).
+  renderFrame(ctx,media,displayed,t,{debug,detections:cached||overlay?.detections||[],predictedBox:overlay?.predicted||null,draft,maskCache,previewMask:$('preview-mask').checked});
+  if(debug&&!cached&&!overlay&&!trackingActive&&kind==='video'&&ai.ready&&performance.now()-lastDebugRequest>180&&debugAnalysisPending!==frameIndex){
+    debugAnalysisPending=frameIndex;lastDebugRequest=performance.now();
+    ai.detect(media,t,project.video.fps).then(()=>{if(Math.round(currentTime()*project.video.fps)===frameIndex)render();}).catch(()=>{}).finally(()=>{debugAnalysisPending=-1;});
+  }
   if(!temporaryReveal)requestMasks(t);
   $('time-display').textContent=kind==='photo'?'PHOTO':`${seconds(t)} / ${seconds(project.video.duration)}`;
   timeline.setPlayhead(t);
@@ -69,7 +81,8 @@ function refresh({renderOnly=false}={}){
     if(isPersonSelection(c)&&kind==='video'){
       const done=!needsFullTracking(c,project.video.duration);
       trackingLabel.classList.toggle('complete',done);
-      trackingLabel.textContent=c.userEnded?'Manual end point selected — review this time range.':
+      trackingLabel.textContent=openReviewGaps(c).length?`⚠ ${openReviewGaps(c).length} uncertain interval(s). Tap an amber timeline segment or Review gaps.`:
+        c.userEnded?'Manual end point selected — review this time range.':
         done?`✓ AI followed this person across the full ${seconds(project.video.duration)} clip.`:
         '⚠ Following is unfinished. Export will ask you to complete tracking before saving.';
     }
@@ -81,6 +94,7 @@ function refresh({renderOnly=false}={}){
     $('safety-margin').value=c.safetyMargin??8;$('safety-label').textContent=(c.safetyMargin??8)+'px';
     $('include-face').checked=!!c.includeFace;$('whole-frame').checked=!!c.wholeFrame;
   }
+  refreshGapPanel(c);
 }
 function snapshot(){if(!project)return;maskCache.clear();history.record(project);refresh();scheduleSave();}
 // Deletes and Clear must be durable before another deferred autosave can run.
@@ -115,6 +129,47 @@ $('clear-changes-yes').onclick=confirmClearProject;
 
 function scheduleSave(){clearTimeout(saveTimer);saveTimer=setTimeout(()=>saveProject(project).catch(()=>{}),500);}
 function updateDirect(fn,{save=false,refreshUI=true}={}){if(!project)return;fn();if(save)snapshot();else if(refreshUI)refresh();else render();}
+function refreshGapPanel(c){
+  const panel=$('gap-review-panel'),list=$('gap-review-list');if(!panel||!list)return;
+  const gaps=c?openReviewGaps(c):[];panel.classList.toggle('hidden',!gaps.length);list.replaceChildren();
+  for(const gap of gaps){
+    const row=document.createElement('div');row.className='gap-review-item';
+    const label=document.createElement('span');label.textContent=`⚠ ${seconds(gap.from)}–${seconds(gap.to)}`;
+    const button=document.createElement('button');button.type='button';button.className='btn outline small';button.textContent='Review';
+    button.addEventListener('click',()=>{void reviewGap(c,gap);});row.append(label,button);list.append(row);
+  }
+}
+function findGap(c,gapId){return c?.reviewGaps?.find(g=>g.id===gapId)||openReviewGaps(c)[0]||null;}
+async function markGapWithConfirmation(c,gap){
+  if(!gap)return false;
+  selectMask(c.id);await seekTo((gap.from+gap.to)/2);
+  const choice=await requestDecision('coverage-mark-modal',{
+    detail:`${c.label}: ${seconds(gap.from)}–${seconds(gap.to)}. Confirm only after checking the video around this interval; the AI cannot prove identity during an occlusion.`,
+    buttons:{'coverage-mark-confirm':'confirm','coverage-mark-back':'back'}
+  });
+  if(choice!=='confirm')return false;
+  markGapReviewed(c,gap,'user-confirmed');snapshot();return true;
+}
+async function reviewGap(c,gap){
+  if(!c||!gap||!project)return 'back';
+  selectedId=c.id;refresh();hiddenVideo.pause();
+  await seekTo(Math.min(project.video.duration,(gap.from+gap.to)/2));render();
+  try{$('gap-action-shot').src=canvas.toDataURL('image/jpeg',.75);}catch{$('gap-action-shot').removeAttribute('src');}
+  const choice=await requestDecision('gap-action-modal',{
+    detail:`${c.label}, ${seconds(gap.from)}–${seconds(gap.to)}. Inspect the surrounding frames. If identity is uncertain, draw a box or re-tap the correct person.`,
+    buttons:{'gap-confirm':'confirm','gap-draw':'draw','gap-retap':'retap','gap-end':'end','gap-back':'back'}
+  });
+  if(choice==='confirm'){await markGapWithConfirmation(c,gap);return 'confirm';}
+  if(choice==='end'){finishCoverAtGap(c,gap);snapshot();return 'end';}
+  if(choice==='draw'||choice==='retap'){
+    // The on-canvas action is deliberately NOT auto-resolved. The next actual
+    // pointer action supplies the user's correction, then clears the amber bar.
+    gapEditor={cId:c.id,gapId:gap.id,mode:choice};setTool(choice==='draw'?'draw':'select');
+    toast(choice==='draw'?'Draw around the correct person at this paused frame.':'Tap the correct person at this paused frame.');
+    return choice;
+  }
+  return 'back';
+}
 function selectMask(id){selectedId=id;refresh();}
 function setTool(mode){tool=mode;input.setMode(mode==='key'?'draw':mode==='draw'?'draw':'select');
   ['select','draw','key','exclude'].forEach(n=>$(`mode-${n}`).classList.toggle('selected',n===mode));
@@ -227,6 +282,12 @@ async function openFile(file){
 }
 
 function onDraw(box){
+  if(gapEditor?.mode==='draw'){
+    const c=project?.concealments.find(x=>x.id===gapEditor.cId),g=findGap(c,gapEditor.gapId);
+    gapEditor=null;if(!c||!g)return;
+    addPoint(c,currentTime(),box,'manual',1);markGapReviewed(c,g,'user-drawn');
+    selectedId=c.id;setTool('select');snapshot();toast('Manual correction saved. Review the frames around it before sharing.');return;
+  }
   if(fixResolve){const fix=fixResolve;fixResolve=null;temporaryReveal=false;$('temporary-reveal').classList.add('hidden');setTool('select');fix(box);return;}
   if(!project)return;
   hiddenVideo.pause();const t=currentTime();
@@ -285,9 +346,8 @@ async function autoTrackPerson(c,{fromExport=false}={}){
   const fweight=Math.max(0,duration-origin)/Math.max(duration,.01);
   let userEnded=false,retryAfterCleanup=false;
   const review=async info=>{
-    // Walking outside the camera's view is expected; maintain a conservative
-    // predicted region and keep searching for re-entry without repeated taps.
-    if(info.reason?.includes('Subject lost'))return {action:'continue'};
+    // v1.11 never conceals another person merely because a target was lost.
+    // A sustained loss needs a visible human decision.
     const decision=await askTracking(info);
     if(decision.action==='end'){c.userEnded=true;userEnded=true;}
     return decision;
@@ -307,20 +367,33 @@ async function autoTrackPerson(c,{fromExport=false}={}){
         onFrame:(t,boxes)=>{aiBoxes=boxes;render();},onReview:review});
     }
     if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
-    if(!userEnded){finalizeFullTrack(c,duration);progress(1,'Person followed from start to end. Review the result.');}
+    if(!userEnded){finalizeFullTrack(c,duration);progress(1,c.reviewGaps?.some(g=>!g.resolved)?'Tracking complete with review gaps — correct uncertain moments before export.':'Person followed from start to end. Review the result.');}
     else c.trackingStatus='complete';
     snapshot();
-    toast(`${c.label}: followed through ${seconds(duration)}. Review before sharing.`);
+    toast(c.reviewGaps?.some(g=>!g.resolved)?`${c.label}: uncertain intervals need review; export is blocked until corrected.`:`${c.label}: followed through ${seconds(duration)}. Review before sharing.`);
     return true;
   }catch(error){
     c.trackingStatus='incomplete';snapshot();
     if(error.name!=='AbortError')console.error('Full-video tracking failed',error);
     if(!fromExport){
+      if(!openReviewGaps(c).length&&c.track.length){
+        const last=c.track.at(-1)?.t||0;
+        if(last<duration-.04)c.reviewGaps=[...(c.reviewGaps||[]),{
+          from:last,to:duration,reason:'Tracking interrupted before the end',resolved:false
+        }];
+      }
       const action=await requestDecision('coverage-block-modal',{
-        detail:`${c.label} could not be followed through the complete video (${error.message}). The export will not silently stop masking early. Retry tracking or return to the editor.`,
-        buttons:{'coverage-finish':'retry','coverage-back':'back'}
+        detail:`${c.label} could not be followed through the complete video (${error.message}). Retry, review uncertain frames, or explicitly end this cover.`,
+        buttons:{'coverage-finish':'retry','coverage-review':'review','coverage-mark':'mark','coverage-end':'end','coverage-back':'back'}
       });
       if(action==='retry')retryAfterCleanup=true;
+      if(action==='review'&&openReviewGaps(c).length)await reviewGap(c,openReviewGaps(c)[0]);
+      if(action==='mark'&&openReviewGaps(c).length)await markGapWithConfirmation(c,openReviewGaps(c)[0]);
+      if(action==='end'){
+        if(openReviewGaps(c).length)finishCoverAtGap(c,openReviewGaps(c)[0]);
+        else{c.userEnded=true;c.endTime=Math.min(duration,c.track.at(-1)?.t??duration);}
+        snapshot();
+      }
     }
   }finally{
     trackingActive=false;endBusy();hiddenVideo.pause();
@@ -332,6 +405,18 @@ async function autoTrackPerson(c,{fromExport=false}={}){
   return false;
 }
 async function onTap(x,y){
+  if(gapEditor?.mode==='retap'){
+    const editor=gapEditor,c=project?.concealments.find(x=>x.id===editor.cId),gap=findGap(c,editor.gapId);
+    if(!c||!gap){gapEditor=null;return;}
+    hiddenVideo.pause();try{
+      await ai.init();const boxes=await ai.detect(media,currentTime(),project.video.fps),match=nearestPerson(boxes,x,y);
+      if(!match){toast('No person found at the tap. Try again or Draw box.');return;}
+      addPoint(c,currentTime(),match,'manual',match.confidence||1);
+      markGapReviewed(c,gap,'user-retapped');c.originalTapTime=currentTime();
+      gapEditor=null;selectedId=c.id;setTool('select');snapshot();
+      toast('Correct person re-selected at this frame. Review downstream motion, or press Track → to refresh it.');
+    }catch(e){toast('Re-tap failed: '+e.message);}return;
+  }
   if(fixResolve){const b={x:clamp(x-.09,0,.99),y:clamp(y-.14,0,.99),w:.18,h:.28};onDraw(b);return;}
   if(tool==='key'){toast('Draw a rectangle for the new keyframe.');return;}
   if(tool==='draw'){toast('Drag to draw a rectangle, not just tap.');return;}
@@ -361,6 +446,7 @@ async function onTap(x,y){
 }
 const input=new CanvasInput(canvas,{onDraw,onTap,onDraft:b=>{draft=b;render();}});
 const timeline=new Timeline({slider:$('scrubber'),lanes:$('timeline-lanes'),onSeek:seekTo,onSelect:selectMask,
+  onGapSelect:(id,gapId)=>{const c=project?.concealments.find(x=>x.id===id);if(c)void reviewGap(c,findGap(c,gapId));},
   onRange:(id,edge,t)=>{const c=project.concealments.find(x=>x.id===id);if(!c)return;if(edge==='start'){c.startTime=clamp(t,0,c.endTime);c.userStart=true;}else{c.endTime=clamp(t,c.startTime,project.video.duration);c.userEnded=true;}refresh({renderOnly:true});},
   onCommit:()=>snapshot(),onMenu:(id,rect)=>{selectMask(id);const menu=$('mask-menu');menu.style.left=`${Math.min(window.innerWidth-170,rect.left)}px`;menu.style.top=`${Math.min(window.innerHeight-100,rect.bottom+4)}px`;menu.classList.remove('hidden');}
 });
@@ -375,8 +461,13 @@ function progress(p,text){$('busy-progress').style.width=(clamp(p,0,1)*100).toFi
 function endBusy(){busyController=null;$('busy').classList.add('hidden');}
 function abortAll(){temporaryReveal=false;$('temporary-reveal').classList.add('hidden');busyController?.abort();if(reviewResolve){reviewResolve({action:'end'});reviewResolve=null;hideReview();}if(fixResolve){fixResolve(null);fixResolve=null;}}
 function hideReview(){$('review-modal').classList.add('hidden');}
-async function askTracking({time,reason,detections,proposed,direction,expectedThumb,candidateThumb}){
+async function askTracking({kind:reviewKind,time,reason,detections,proposed,direction,expectedThumb,candidateThumb}){
   $('busy').classList.add('hidden');
+  const reappeared=reviewKind==='reacquire';
+  $('review-continue').textContent=reappeared?'Yes, cover':'Keep going';
+  $('review-skip').textContent=reappeared?'No, different person':'Skip ahead';
+  $('review-fix').textContent=reappeared?'Draw box':'Fix box';
+  $('review-end').classList.toggle('hidden',reappeared);
   $('review-modal').classList.remove('hidden');$('review-description').textContent=`At ${seconds(time)}: ${reason}. Confirm, adjust, or stop. The previous region remains covered until you choose.`;
   const thumbs=$('review-identity-thumbs');if(thumbs){thumbs.classList.toggle('hidden',!expectedThumb&&!candidateThumb);
     if(expectedThumb)$('review-target-thumb').src=expectedThumb;
@@ -385,6 +476,8 @@ async function askTracking({time,reason,detections,proposed,direction,expectedTh
   try{$('review-shot').src=canvas.toDataURL('image/jpeg',.7);}catch{$('review-shot').removeAttribute('src');}
   const action=await new Promise(resolve=>{reviewResolve=resolve;});
   reviewResolve=null;hideReview();
+  if(reappeared&&action.action==='continue')action.action='accept';
+  if(reappeared&&action.action==='skip')action.action='reject';
   if(action.action==='fix'){
     toast('Draw a new box. You may temporarily reveal the original if you need to locate the subject.');
     temporaryReveal=false;$('temporary-reveal').classList.remove('hidden');setTool('draw');
@@ -432,7 +525,7 @@ function showScan(){const list=$('scan-list');list.replaceChildren();$('scan-all
   for(const tr of scanResults){const row=document.createElement('div');row.className='scan-person';
     const thumb=document.createElement('img');thumb.className='thumb';thumb.alt=tr.label+' at initial detection';thumb.src=tr.thumbnail;
     const info=document.createElement('div');const name=document.createElement('strong');name.textContent=tr.label;
-    const sub=document.createElement('span');sub.className='dim';sub.textContent=`Full-video cover on selection · ${tr.track.length} tracked positions`;info.append(name,sub);
+    const sub=document.createElement('span');sub.className='dim';sub.textContent=`Visible ${seconds(tr.startTime)}–${seconds(tr.endTime)} · ${tr.track.length} positions (no screen-wide hold)`;info.append(name,sub);
     const group=document.createElement('div');group.className='choice-group';
     for(const [value,caption] of [['cover','Cover'],['exclude','Don’t cover'],['skip','Skip']]){
       const label=document.createElement('label'),input=document.createElement('input');input.type='radio';input.name='choice-'+tr.id;input.value=value;input.checked=value==='cover';label.append(input,document.createTextNode(caption));group.append(label);
@@ -492,6 +585,7 @@ $('fps-input').addEventListener('change',e=>{if(!project)return;
 });
 $('mode-select').onclick=()=>setTool('select');$('mode-draw').onclick=()=>setTool('draw');$('mode-key').onclick=()=>setTool('key');$('mode-exclude').onclick=()=>setTool('exclude');
 $('find-people').onclick=()=>runScan(false);$('cover-everyone').onclick=()=>runScan(true);
+$('review-gaps-selected').onclick=()=>{const c=selected();if(c)void reviewGap(c,openReviewGaps(c)[0]);};
 $('track-forward').onclick=()=>runTracking(1);$('track-backward').onclick=()=>runTracking(-1);
 $('cancel-task').onclick=abortAll;
 $('temporary-reveal').onclick=()=>{temporaryReveal=!temporaryReveal;$('temporary-reveal').classList.toggle('active',temporaryReveal);$('temporary-reveal').textContent=temporaryReveal?'Hide original again':'Temporarily show original';render();};
@@ -588,21 +682,46 @@ for(const id of ['export-preset','export-codec','export-fps','export-audio-bitra
 async function ensurePersonCoverage(){
   if(kind!=='video'||!project)return false;
   for(const c of [...project.concealments]){
-    if(!needsFullTracking(c,project.video.duration))continue;
     let attempts=0;
     while(needsFullTracking(c,project.video.duration)){
-      const decision=await requestDecision('coverage-block-modal',{
-        detail:`${c.label} is not tracked from start to finish. HalalFrame will finish tracking before exporting, so the concealment does not cut out early.`,
-        buttons:{'coverage-finish':'finish','coverage-back':'back'}
-      });
-      if(decision==='back')return false;
-      const completed=await autoTrackPerson(c,{fromExport:true});
-      if(completed&&!needsFullTracking(c,project.video.duration))break;
-      if(++attempts>=3){
-        await requestDecision('coverage-block-modal',{
-          detail:`Unable to finish following ${c.label} after three attempts. Please correct the tracking on the timeline or remove the selection. Export has NOT begun.`,
-          buttons:{'coverage-back':'back'}
+      const gaps=openReviewGaps(c);
+      if(gaps.length){
+        const gap=gaps[0];
+        const choice=await requestDecision('coverage-block-modal',{
+          detail:`${c.label} has ${gaps.length} uncertain interval(s), starting ${seconds(gap.from)}–${seconds(gap.to)}. This is not permission to blur another person. Review and resolve it, or end this cover before exporting.`,
+          buttons:{'coverage-review':'review','coverage-mark':'mark','coverage-end':'end','coverage-finish':'finish','coverage-back':'back'}
         });
+        if(choice==='back')return false;
+        if(choice==='review'){
+          const result=await reviewGap(c,gap);
+          if(result==='back'||result==='draw'||result==='retap')return false;
+          continue;
+        }
+        if(choice==='mark'){
+          const confirmed=await markGapWithConfirmation(c,gap);
+          if(!confirmed)return false;
+          continue;
+        }
+        if(choice==='end'){finishCoverAtGap(c,gap);snapshot();continue;}
+        if(choice==='finish'){
+          // A new tracking pass cannot automatically prove a lost identity.
+          // Keep the current gap available for review after the retry.
+          if(++attempts>2)return false;
+          await autoTrackPerson(c,{fromExport:true});continue;
+        }
+      }
+      if(++attempts>3)return false;
+      const choice=await requestDecision('coverage-block-modal',{
+        detail:`${c.label} still needs a complete tracking pass. Finish following the selected person before export, or end the cover explicitly.`,
+        buttons:{'coverage-finish':'finish','coverage-review':'review','coverage-mark':'mark','coverage-end':'end','coverage-back':'back'}
+      });
+      if(choice==='back')return false;
+      if(choice==='finish'){await autoTrackPerson(c,{fromExport:true});continue;}
+      if(choice==='end'){c.userEnded=true;c.endTime=Math.min(c.endTime,c.track.at(-1)?.t??c.endTime);snapshot();continue;}
+      if(choice==='review'||choice==='mark'){
+        const gap=openReviewGaps(c)[0];
+        if(!gap){toast('No gap has been recorded. Choose Finish tracking or End cover here.');continue;}
+        if(choice==='review')await reviewGap(c,gap);else await markGapWithConfirmation(c,gap);
         return false;
       }
     }
@@ -786,7 +905,6 @@ $('share-video').onclick=async()=>{
   try{if(!(await shareBlob(exportResult.blob,exportResult.name))){openResultSheet(exportResult,false);$('export-save-message').textContent='Sharing files is not supported in this browser. Tap Save to phone, then share from Gallery/Files.';}}
   catch(e){if(e.name!=='AbortError')toast('Sharing failed: '+e.message);}
 };
-// v1.10 hotfix: restored block accidentally removed (self-check, share intake, firstRun, SW AI warm-up).
 async function runModelSelfCheck(){
   const status=$('model-test-status');status.textContent='AI self-check: downloading model and testing…';
   try{const img=new Image();img.src='assets/test-person.jpg';await img.decode();const result=await ai.selfCheck(img);
