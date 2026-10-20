@@ -1,6 +1,6 @@
 import {clamp,seconds} from '../state.js';
 export class Timeline {
-  constructor({slider,lanes,onSeek,onSelect,onRange,onCommit,onMenu}={}){
+  constructor({slider,lanes,onSeek,onSelect,onRange,onCommit,onMenu,onGapSelect}={}){
     Object.assign(this,{slider,lanes,onSeek,onSelect,onRange,onCommit,onMenu});this.duration=1;this.activeId=null;this.drag=null;
     slider.addEventListener('input',()=>this.onSeek(Number(slider.value)));
   }
@@ -19,11 +19,24 @@ export class Timeline {
       const endHandle=document.createElement('div');endHandle.className='range-handle right';endHandle.title='Drag end';endHandle.dataset.handle='end';
       bar.append(startHandle,endHandle);
       for(const point of c.track){const dot=document.createElement('span');dot.className='key-dot';dot.title=`Keyframe at ${seconds(point.t)}`;dot.style.left=`${100*(point.t-c.startTime)/Math.max(.001,c.endTime-c.startTime)}%`;bar.append(dot);}
+      for(const gap of c.reviewGaps||[]){
+        if(gap.resolved===true||gap.to<=c.startTime||gap.from>=c.endTime)continue;
+        const left=Math.max(c.startTime,gap.from),right=Math.min(c.endTime,gap.to);
+        const amber=document.createElement('span');amber.className='review-gap-segment';amber.setAttribute('role','button');amber.tabIndex=0;
+        amber.style.left=`${100*(left-c.startTime)/Math.max(.001,c.endTime-c.startTime)}%`;
+        amber.style.width=`${Math.max(1,100*(right-left)/Math.max(.001,c.endTime-c.startTime))}%`;
+        amber.title=`Uncertain ${seconds(left)}–${seconds(right)} — tap to review`;
+        amber.setAttribute('aria-label',amber.title);
+        amber.addEventListener('click',e=>{e.stopPropagation();this.onGapSelect?.(c.id,gap.id);});
+        amber.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();this.onGapSelect?.(c.id,gap.id);}});
+        bar.append(amber);
+      }
       track.append(bar);this.lanes.append(lane);
       let longTimer=null,longFired=false;
       bar.addEventListener('pointerdown',e=>{
         e.stopPropagation();const edge=e.target.closest('[data-handle]');
         if(edge){e.preventDefault();this.drag={id:c.id,which:edge.dataset.handle,bar,track};bar.setPointerCapture(e.pointerId);return;}
+        if(e.target.closest('.review-gap-segment'))return;
         longFired=false;longTimer=setTimeout(()=>{longFired=true;this.onMenu(c.id,bar.getBoundingClientRect());},630);
       });
       bar.addEventListener('pointermove',e=>{
