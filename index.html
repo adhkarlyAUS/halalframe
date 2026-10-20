@@ -3,18 +3,18 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#17191b"><meta name="description" content="HalalFrame by Adhkarly — private, on-device video concealment editor.">
-<title>HalalFrame v1.10 — An Adhkarly Product</title>
+<title>HalalFrame v1.11.1 — An Adhkarly Product</title>
 <style>.splash-screen{position:fixed;inset:0;z-index:220;background:#111416;color:#f6f7f3;display:flex;align-items:center;justify-content:center}.splash-content{width:min(600px,90%);text-align:center}.splash-logo{width:min(100%,480px)}.splash-screen.hidden{display:none!important}</style>
-<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=1.10">
-<link rel="icon" href="assets/favicon-32.png?v=1.10" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=1.11.1">
+<link rel="icon" href="assets/favicon-32.png?v=1.11.1" type="image/png" sizes="32x32">
 <script>
 // The ONE release constant: CSS, manifest, entry module, transitive imports and
 // service-worker registration all derive their cache-busting URLs from here.
-const APP_VERSION='1.10';window.APP_VERSION=APP_VERSION;
+const APP_VERSION='1.11.1';window.APP_VERSION=APP_VERSION;
 (function bootstrapVersionedAssets(){
   const paths=['js/main.js','js/state.js','js/engine/ai.js','js/engine/render.js',
-    'js/engine/segmentation.js','js/engine/auto-coverage.js','js/engine/export.js','js/engine/ffmpeg-worker.js',
-    'js/engine/tracker.js','js/engine/identity.js','js/engine/media-probe.js','js/engine/sequential-decoder.js','js/engine/sequential-analysis.js','js/engine/conversion.js','js/ui/canvas-input.js','js/ui/timeline.js','js/ui/first-run.js','js/ui/share-target.js',
+    'js/engine/segmentation.js','js/engine/auto-coverage.js','js/engine/gap-review.js','js/engine/export.js','js/engine/ffmpeg-worker.js',
+    'js/engine/tracker.js','js/engine/bytetrack.js','js/engine/real-footage-tracker.js','js/engine/identity.js','js/engine/media-probe.js','js/engine/sequential-decoder.js','js/engine/sequential-analysis.js','js/engine/conversion.js','js/ui/canvas-input.js','js/ui/timeline.js','js/ui/first-run.js','js/ui/share-target.js',
     'js/ui/audio-panel.js','js/audio/models.js','js/audio/music-check.js','js/audio/dsp.js','js/audio/music-worker.js'];
   const imports={};
   for(const path of paths)imports[new URL(path,document.baseURI).href]=new URL(`${path}?v=${APP_VERSION}`,document.baseURI).href;
@@ -100,6 +100,12 @@ const APP_VERSION='1.10';window.APP_VERSION=APP_VERSION;
         <div class="control-card" data-visual-settings><div class="section-head"><h3>2 · Selected region</h3><button id="delete-mask" class="text-btn danger" disabled>Delete</button></div>
           <div id="no-selection" class="empty-selection">Select or draw a region to edit its settings.</div>
           <div id="selection-panel" class="hidden"><div id="tracking-status" class="tracking-state hidden" role="status" aria-live="polite"></div>
+            <div id="gap-review-panel" class="gap-review-panel hidden" aria-label="Uncertain tracking gaps">
+              <strong class="gap-panel-title">Review uncertain moments</strong>
+              <p class="hint">Amber timeline segments need your decision. The app will never silently switch to another person.</p>
+              <div id="gap-review-list" class="gap-review-list"></div>
+              <button type="button" id="review-gaps-selected" class="btn secondary block">Review gaps →</button>
+            </div>
             <label class="check" style="margin-bottom:12px"><input id="mask-enabled" type="checkbox" checked> Conceal this person (on/off)</label><label class="field">Label<input id="mask-label" type="text" maxlength="55"></label>
             <div class="two-cols"><label class="field">Effect<select id="effect"><option value="pixelate">Pixelate (default)</option><option value="blur">Blur</option></select></label><label class="field">Shape<select id="shape"><option value="outline">Person outline (default)</option><option value="box">Box</option><option value="skin">Exposed skin</option><option value="hair">Hair only</option></select></label></div>
             <div class="two-cols"><label class="field">Strength<input id="strength" type="range" min="3" max="60" step="1"></label><label class="field">Padding <span id="padding-label">15%</span><input id="padding" type="range" min="0" max="35" step="1"></label></div>
@@ -189,7 +195,7 @@ const APP_VERSION='1.10';window.APP_VERSION=APP_VERSION;
   </section>
   <section class="discover-card"><div class="discover-label">ALSO FROM OUR DEVELOPERS</div><div class="discover-wordmark"><span>adhkar</span><span class="discover-ly">ly</span></div><p>Daily adhkar, Qur'an, du'as and Islamic learning — built by the Adhkarly team.</p><div class="discover-actions"><button class="btn subtle" disabled title="App link not configured">Android · Coming soon</button><button class="btn subtle" disabled title="App link not configured">iPhone · Coming soon</button><button class="btn subtle" disabled title="App link not configured">Web · Coming soon</button></div></section>
   <section class="about-grid"><article class="info-card"><h3>Private by design</h3><p>Your photo or video remains in your browser tab. No accounts, servers, API keys or uploaded media. AI models must download once before detection works.</p></article><article class="info-card"><h3>Before you share</h3><p>AI can miss a person, a frame or exposed awrah. Review everything manually. Nothing in this app guarantees religious compliance.</p><button id="ruling-open" class="text-btn">Read the reminder ↗</button></article></section>
-  <footer class="footer"><div>HALALFRAME v1.10 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p class="footer-credit">Developed by Adhkarly Team</p><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · <button id="install-app" class="text-btn">Install app</button> · <button id="footer-disclaimer" class="text-btn">View disclaimer again</button> · <button id="footer-social-help" class="text-btn">Social media help</button></p></footer>
+  <footer class="footer"><div>HALALFRAME v1.11.1 <span>·</span> AN <b>ADHKAR<span class="purple">LY</span></b> PRODUCT</div><p class="footer-credit">Developed by Adhkarly Team</p><p>Software built to serve the Ummah. <button id="about-open" class="text-btn">About us</button> · <button id="install-app" class="text-btn">Install app</button> · <button id="footer-disclaimer" class="text-btn">View disclaimer again</button> · <button id="footer-social-help" class="text-btn">Social media help</button></p></footer>
 </main>
 <div id="update-banner" class="update-banner hidden" role="status" aria-live="polite">
   <span>Update ready — tap to reload</span><button type="button" id="update-reload" class="btn primary small">Reload</button>
@@ -215,12 +221,34 @@ const APP_VERSION='1.10';window.APP_VERSION=APP_VERSION;
  <div class="modal-buttons"><button type="button" id="export-review-cancel" class="btn outline">Go back</button><button type="button" id="export-review-continue" class="btn primary" disabled>Continue to export →</button></div>
  </div>
 </div>
-<!-- V1.10: every export blocker is a persistent, actionable modal, never a transient toast. -->
+<!-- V1.11: every export blocker is a persistent, actionable modal, never a transient toast. -->
 <div id="coverage-block-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="coverage-block-title">
  <div class="modal"><div class="eyebrow lime">PROTECT THE ENTIRE VIDEO</div><h2 id="coverage-block-title">This person is not fully tracked yet</h2>
  <p id="coverage-block-detail">HalalFrame must follow the selected person through the full video before export.</p>
- <div class="modal-buttons"><button id="coverage-finish" class="btn primary" type="button">Finish tracking</button><button id="coverage-back" class="btn outline" type="button">Back to editor</button></div></div>
+ <div class="modal-buttons">
+   <button id="coverage-review" class="btn primary" type="button">Review gaps</button>
+   <button id="coverage-mark" class="btn secondary" type="button">Mark as reviewed</button>
+   <button id="coverage-end" class="btn secondary" type="button">End cover here</button>
+   <button id="coverage-finish" class="btn outline" type="button">Finish tracking</button>
+   <button id="coverage-back" class="btn subtle" type="button">Back to editor</button>
+  </div></div>
 </div>
+<div id="gap-action-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="gap-action-title">
+ <div class="modal"><div class="eyebrow lime">MANUAL IDENTITY REVIEW</div><h2 id="gap-action-title">Review this tracking gap</h2>
+  <p id="gap-action-detail">The selected person may have been hidden by another person. Review this frame.</p>
+  <img id="gap-action-shot" class="review-image" alt="Current video frame at the uncertain time">
+  <p class="hint">Confirm OK only after viewing the surrounding video. Otherwise draw a new region or re-tap the person in the frame.</p>
+  <div class="modal-buttons"><button id="gap-confirm" type="button" class="btn primary">Confirm OK</button>
+   <button id="gap-draw" type="button" class="btn secondary">Draw box</button>
+   <button id="gap-retap" type="button" class="btn secondary">Re-tap person</button>
+   <button id="gap-end" type="button" class="btn outline">End cover here</button>
+   <button id="gap-back" type="button" class="btn subtle">Go back</button></div>
+ </div></div>
+<div id="coverage-mark-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="coverage-mark-title">
+ <div class="modal"><div class="eyebrow lime">CONFIRM YOUR REVIEW</div><h2 id="coverage-mark-title">Have you checked this interval?</h2>
+  <p id="coverage-mark-detail">AI cannot verify which person is visible here. Only mark this gap reviewed after checking the video yourself.</p>
+  <div class="modal-buttons"><button id="coverage-mark-confirm" type="button" class="btn primary">I've checked this interval</button><button id="coverage-mark-back" type="button" class="btn outline">Go back</button></div>
+ </div></div>
 <div id="audio-risk-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="audio-risk-title">
  <div class="modal"><div class="eyebrow lime">BEFORE EXPORTING THE SOUND</div><h2 id="audio-risk-title">Music may remain in this audio</h2>
  <p id="audio-risk-detail">AI music removal is not guaranteed. Choose how to continue.</p>

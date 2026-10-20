@@ -1,38 +1,125 @@
-# HalalFrame v1.10 — guided one-tap editing and delivery
+# HalalFrame v1.11.1 — Gap Review & Re-acquisition Hotfix
 
-A static, fully on-device photo/video editor. **Free; no accounts, no app backend, no uploaded media or paid APIs.** Initial AI/audio weights and pinned JavaScript libraries download from their providers when needed. Maintains the approved charcoal/lime HalalFrame and purple Adhkarly branding.
+This is a **targeted patch on the verified v1.11 codebase**. No backend or paid
+API. The video and user corrections stay on the device. The v1.9 MP4Box decoder
+hotfixes and the restored first-run/share/service-worker bootstrap are preserved.
 
-## Install or deploy
+## What's fixed
 
-1. Extract `HalalFrame_v1.10_Full_Build.zip`.
-2. Open your existing GitHub repository `https://github.com/adhkarlyaus/halalframe`, upload **all extracted contents** to the root (not a containing subfolder), replace changed files and commit to `main`.
-3. After GitHub Pages completes, visit `https://adhkarlyaus.github.io/halalframe/?v=1.10`. A fresh service worker should cache the versioned app shell. If still stale, close the installed app and reopen / update.
-4. Locally, serve the extracted directory over HTTP/HTTPS (`python -m http.server 8000`) rather than opening `index.html` as `file://`; media APIs and service workers need a secure context. **No build step.**
+1. **Natural exits do not block export.** A Find All track that terminates with
+   no subsequent confirmed observation is not a review gap. Only genuine
+   *interior* detection gaps can block export. Duplicate overlapping gap reports
+   are combined; restored projects with old gaps remain manually reviewable.
+2. **Review gaps later.** Amber timeline stripes and a Review gaps panel display
+   the actual uncertain time intervals. The export modal offers Review gaps,
+   Mark as reviewed (with explicit confirmation), End cover here, Finish
+   tracking and Back. In the review window, the user can Confirm OK, Draw box,
+   Re-tap person, End cover here or Back.
+3. **Proposed re-acquisition, never a silent identity switch.** The per-frame
+   scanner continues looking for plausible *new* tracks after an occlusion.
+   At 6.10 seconds in the supplied CCTV detections it proposes Person 8, with
+   side-by-side thumbnails where available: Yes, cover / No, different person /
+   Draw box. Only a user's Yes links the new track. The unseen interval
+   remains amber until the user reviews or explicitly ends coverage.
+4. **Test suite repaired.** Old release tests check enduring functionality,
+   rather than requiring their original historical APP_VERSION. The old
+   v1.10 scan fixture now correctly models visibility ending at 8s. Added a
+   directory-compatible runner and three real-JSON regressions.
 
-## One-tap people tracking
+## Run all tests
 
-Pause a video and tap a person. The same source person is followed immediately to the end **and backwards to the start**, with a clear progress overlay and Cancel button. No separate Track → action is required. Find All and Cover Everyone create whole-duration timeline bars from a full-video scan. Manual Draw areas are still time-limited by design.
+```bash
+node --test tests/regression/
+# Child suite: 35 tests, 35 pass, 0 fail
+```
 
-On uncertainty, the app retains a conservative safety region and can request confirmation for ambiguous identity transitions. Simple disappearance and re-entry is handled automatically. If tracking cannot finish, an incomplete status is shown and Export presents an actionable Finish tracking / Back to editor modal. A user who **deliberately** sets an End Here point retains that manual override. No algorithm can guarantee it detects every instance of awrah; the entire preview and export must still be reviewed.
+`python tests/v1111-browser-harness.py` runs a Chromium DOM bootstrap and
+persistent-gap modal-action test. It passed with zero JavaScript/page errors.
+**Full localhost/file/HTTPS navigation was blocked by this container's browser
+policy**; that is not a verified live-browser load, and actual MediaPipe inference
+was not rerun here. See `tests/TEST_REPORT.md`.
 
-## Guided Export (three stages)
+## Publish free
 
-1. **Complete person tracking.** Any unfinished person selection must be completed (or explicitly ended manually). Export does not silently accept an accidentally three-second AI region.
-2. **Prepare audio.** Original, No audio or Remove music, keep speech. For Cleaned Audio, Export itself launches the pinned worker (Silero + Quick/Best/Studio) and YAMNet check, showing progress. An amber/red or unverified result triggers a **persistent modal** offering Mute risky parts and export, No audio, Export anyway (explicit acceptance of risk), or Go back and review. If the model fails, select Retry, No audio or Back—never a silent substitute of the original soundtrack.
-3. **Encode and deliver.** The existing hotfixed MP4Box → WebCodecs → canvas → H.264 encoder/muxer is retained. Output opens in a full-screen mobile-friendly result sheet with a playable preview, output size, Save to phone and Share to WhatsApp (via the native browser share sheet). The app requests **one automatic download** on Android/desktop, then leaves a manual Save button and a session-only Recent exports list.
+Use `HalalFrame_v1.11.1_Deploy_Only.zip` for the quickest GitHub Pages update.
+Upload its extracted **contents** into the root of the existing GitHub repository,
+commit, then open `https://adhkarlyaus.github.io/halalframe/?v=1.11.1` after Pages
+finishes deploying. Do not upload the outer ZIP as one file.
 
-### Browser download limitation
+## Test on Android Chrome
 
-Web applications cannot inspect or guarantee the device's Downloads folder, and an automatic download may be rejected after asynchronous work. The UI therefore says "Download requested" rather than falsely claiming "Saved". On Android inspect Files → Downloads or Chrome Downloads. On iPhone use the system Share sheet → Save Video. For WhatsApp, select WhatsApp in the system sheet; automatic silent delivery to WhatsApp is not a supported web capability.
+1. Upload `street.mp4`; Find all people → Cover everyone. Natural exits must
+   not cause blocking modals. A *real* internal gap, if flagged, must show an
+   amber timeline stripe and five decision paths instead of a Back-only dialog.
+2. Tap the dark-coat man at 0 seconds. After the crowded group, the app should
+   **propose** a person around 6.1s, not automatically assign them. Confirm Yes
+   only if the side-by-side comparison is right. Confirm the linked region
+   reaches 19.97s, while the 2.47–6.10s unseen interval remains reviewable.
+3. Verify all amber gaps manually before export. Confirm the downloaded MP4
+   contains only the intended concealments and its audio plays normally.
 
-Filename pattern: `HalalFrame_<original_name>_<YYYY-MM-DD>.mp4`. WebM fallbacks are always labelled `.webm`, not disguised as MP4. Blob URLs remain in this tab for up to four recent exports or a bounded memory limit; save before closing the browser.
+---
 
-## Technical protection
+# HalalFrame v1.11.1 — Real-footage Tracking
 
-This build was created from `HalalFrame_v1.9_Hotfixed_Baseline.zip`, **not** the original broken v1.9 archive. `js/engine/sequential-decoder.js` remains byte-identical, retaining `sample.is_sync ?? sample.is_rap` and the `mp4.appendBuffer()` next-offset loop. The existing instance masks, video export pipeline, on-device audio models and user privacy controls have not been rewritten.
+**Pure static, on-device HalalFrame editor**. This is a focused update to the corrected v1.10 source, not a rewrite of the established video/MP4 export, music separation, PWA, onboarding, or approved charcoal/lime-and-Adhkarly branding. Processing of your media takes place locally in Chrome; third-party AI and JavaScript assets download initially from pinned providers. No server, accounts, paid APIs, or API keys are required.
 
-## Testing
+## Installation / free GitHub Pages update
 
-Run `node tests/regression/v110-coverage.test.mjs`, `node tests/regression/v110-auto-tap.test.mjs`, `node tests/regression/v110-reentry.test.mjs`, `node tests/regression/v110-audio-orchestration.test.mjs`, `node tests/regression/v110-export-ux.test.mjs`, and `python tests/v110-ui.test.py` (requires Playwright + Chromium).
+1. Extract the complete `HalalFrame_v1.11_Real_Footage_Tracking.zip` file.
+2. Upload **the contents** (not the parent folder) over your existing repository root at `https://github.com/adhkarlyaus/halalframe` and commit to `main`.
+3. After Pages deploys, open `https://adhkarlyaus.github.io/halalframe/?v=1.11` and reload the installed app as prompted if a newer service worker is waiting.
+4. On Android Chrome, test using `tests/regression/street.mp4` (20 seconds / 960×720 / 30fps). Point to the dark-coat man near x=824,y=350 at time zero, then try **Find all people**. Check the timeline for uncertainty / review gaps before exporting.
 
-See `tests/TEST_REPORT.md` for results, limitations and real-device checklist. See `CHANGED_FILES_v1.10.md` for exact files modified or added. **Real Google tracking, real ONNX music cleaning, MP4 audio playback and device Downloads are not claimed as verified in this container.**
+GitHub Pages provides HTTPS. Local testing requires HTTP (`python -m http.server 8000`) because browsers restrict ESM modules, service workers, and some WebCodecs on `file://`. No build step is required.
+
+## Why v1.10 failed on real footage
+
+The old track association let weak appearance and distant candidates overrule plausible local motion. With the supplied EfficientDet-Lite0 detections, it could jump at 1 second from the correct person around x=683 to a different person appearing on the far right around x=932. Combined with an unbounded fallback mask, this could blur a stationary or enormous area while leaving the selected person visible. Previous pasted-photo regression clips did not expose this behavior.
+
+## New tracking architecture
+
+- **`js/engine/bytetrack.js`**: independent, original ByteTrack-inspired pixel-space Kalman + Hungarian association. Motion is checked against each predicted box; high-confidence (>=0.50) detections match first, then candidates scoring 0.20–0.50 may continue existing tracks. Strong displacement and geometry gates exclude implausible jumps. Appearance signatures only veto re-acquisition after a gap; they do not override a valid local-motion match. Tracks can be re-acquired near their predicted position for ~1.5 seconds. A tentative detection needs six hits to enter Find All.
+- **`js/engine/real-footage-tracker.js`**: one cached sequential scan of **every decoded frame**, with real per-frame EfficientDet detections, frame timestamps, current-frame predictions, and separate seed-anchored forward / backward traces for mid-video taps. There is at most one tracking review prompt during one continuous identity-loss period.
+- **Safety**: for no more than one second after losing an object, hold its predicted position with at most 1.3× side growth, limited to 2× median observed box area and 20% of a frame. After that, show a review gap **instead of smearing a large static blur or silently switching people**. Unresolved review gaps block verified export. This is an unavoidable precision/safety tradeoff: do not imply that a detector can reliably identify an occluded person with zero information.
+- **Renderer**: pixelate block size scales with person height (rather than the whole frame). AI-selected masks are capped even when padded; user-drawn regions remain under manual control. The existing per-person instance segmentation remains the preferred shape where available.
+- **Debug**: shows the current frame's raw boxes and the selected person's current predicted box, rather than boxes from an earlier point on the timeline.
+
+### Known limitations
+
+The provided detections become ambiguous when the selected dark-coat man reaches the standing group at about 2.5–3 seconds. v1.11 correctly declines to change his identity silently: it marks the gap for review and needs a manual box/keyframe to resolve the concealed section. “Always conceal the correct target” cannot be guaranteed without a human decision when the person becomes indistinguishable or is occluded.
+
+**VFR note:** detection coordinates are in video pixel space, and the sequential path retains decoded presentation times for timeline keyframes. Regression media here is CFR, so real VFR Chrome timing still merits device testing.
+
+## Manual and media features preserved
+
+All previously working v1.10 features are retained: Photo editing, Pixelate / Blur, Person Outline, Clear All + Undo, manual boxes and keyframes, Blackout / Reveal Window where enabled, audio Original / Silent / Quick / Best / Studio with optional music risk checking, export-review guard, one-tap tracking, MP4Box→WebCodecs sequential export with WhatsApp presets, the large save/share result sheet, PWA install, disclaimer, About/Credits and Adhkarly branding.
+
+The user’s **both critical MP4Box hotfixes** are **byte-for-byte preserved** in `js/engine/sequential-decoder.js`:
+
+```js
+type: (sample.is_sync ?? sample.is_rap) ? 'key' : 'delta'
+```
+
+and the loop advancing by the numeric `mp4.appendBuffer(chunk)` next-offset, with fixed-step fallback. The restored v1.9 `firstRun`, share-target, service-worker and `warmAI()` bootstrap block is also preserved in `js/main.js`. v1.11 corrects the v1.10 source that lacked that block.
+
+## Regression and startup tests
+
+Run from the unpacked root:
+
+```bash
+node tests/regression/v111-street.test.mjs
+node tests/regression/v111-integration.test.mjs
+node tests/regression/v111-render.test.mjs
+node tests/regression/v111-safety.test.mjs
+python tests/v111-aspect.py
+python tests/v111-browser-harness.py
+```
+
+See `tests/TEST_REPORT.md` for precise measured values and testing caveats. These tests use the **actual 600-frame MediaPipe detection JSON**, rather than synthetic detection trajectories. The `v111-integration` test injects the provided detections into the real application tracking functions. Real browser EfficientDet/PoseLandmarker execution on the deployed site, actual exported CCTV pixels, and Android Chrome performance still need user acceptance testing. The browser startup harness checks real ESM startup with CDN/network unavailable; it cannot substitute for running the deployed site over HTTPS.
+
+The `tests/regression` directory contains your exact `street_real_detections.json` and `street.mp4`. Neither is used by or downloaded through the production interface.
+
+## Privacy and responsibility
+
+HalalFrame is software to assist with concealment, not a guarantee that all awrah or impermissible content is removed. Always preview and personally review the whole result before sharing. An unresolved loss requires manual confirmation. No private media should be collected for training without explicit consent.
