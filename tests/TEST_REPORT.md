@@ -1,3 +1,30 @@
+# HalalFrame v1.12.0 — live Chrome test report
+
+Environment: Chrome desktop (GPU delegate), live GitHub Pages origin, patched
+modules loaded through an import-map harness. Test media: public sample footage
+of real people (intel-iot-devkit/sample-videos), synthetic music, public-domain
+speech (JFK). Every export was decoded in the browser and inspected frame by
+frame; audio was measured as RMS in music-only and speech windows.
+
+| Clip | v1.11.1 | v1.12.0 |
+|---|---|---|
+| Woman, close-up, tilting head (MP4, speech+music) | face partly visible when tilted; arms, shoulders, hair visible | whole person covered every frame, incl. last frame |
+| Woman + man (MOV, music only) | woman's arms/body visible | woman fully covered, man untouched (Cover women only); music -21 dB → silent |
+| Top-down walkers (WebM) | woman uncovered 1.5–4.2 s; 2nd person missed; tracks swapped; export = silent WebM | woman covered from entrance (pre-roll); both people covered; MP4 export with original audio |
+| 4 men, classroom (1080p 30 fps) | covered (rectangles) | tight per-person silhouettes, no background columns |
+| Vertical selfie reel (720×1280) | face strip only, eyes visible | hair crown, face, arms at frame edge and body covered; export 48 s → 19 s |
+| Photo, woman + man | — | silhouettes only; background between people untouched |
+
+Music removal (Quick model): music-only gaps -30 dB → -75 dB; speech level
+within 1 dB; bass under speech reduced 23–28 dB.
+
+Known limits: AI can still miss people (very small, heavily occluded, unusual
+viewpoints); gender estimate is intentionally conservative and never a ruling.
+Review every export before sharing.
+
+
+---
+
 # HalalFrame v1.11.1 — Verification Report
 
 ## Real MediaPipe dataset: 600 frames, 960×720, 30 fps
