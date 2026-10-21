@@ -16,6 +16,7 @@ import {takeSharedFile} from './ui/share-target.js';
 import {AudioPanel} from './ui/audio-panel.js';
 import {isPersonSelection,needsFullTracking,finalizeFullTrack,applyCompleteScanTrack} from './engine/auto-coverage.js';
 import {openReviewGaps,markGapReviewed,finishCoverAtGap} from './engine/gap-review.js';
+import {estimateTrackGender,genderCaption} from './engine/gender.js';
 const $=id=>document.getElementById(id);
 let project=null,media=null,kind='video',sourceURL=null,selectedId=null,tool='select',draft=null;
 let busyController=null,reviewResolve=null,fixResolve=null,gapEditor=null,aiBoxes=[],trackingActive=false,scanResults=[];
@@ -510,7 +511,7 @@ async function runScan(coverAll=false){
     await ai.init();
     if(kind==='photo'){
       const boxes=await ai.detect(media,0,project.video.fps);
-      scanResults=boxes.map((b,i)=>({id:`person-${i+1}`,label:`Person ${i+1}`,thumbnail:personThumbnail(media,b),track:[{t:0,...b,source:'ai'}],startTime:0,endTime:0}));
+      scanResults=boxes.map((b,i)=>({id:`person-${i+1}`,label:`Person ${i+1}`,thumbnail:personThumbnail(media,b),faceSamples:headCrop(media,b),track:[{t:0,...b,source:'ai'}],startTime:0,endTime:0}));
     }else{
       scanResults=await findAllPeople({video:hiddenVideo,file:sourceFile,project,ai,accuracy:$('tracking-accuracy').value,signal:controller.signal,onProgress:(p,t,count)=>progress(p,`${Math.round(p*100)}% · ${seconds(t)} · ${count} tracks`) });
     }
@@ -520,12 +521,63 @@ async function runScan(coverAll=false){
   }catch(e){if(e.name==='AbortError')toast('Scan cancelled.');else{console.error(e);toast('Scan failed: '+e.message);}}
   finally{trackingActive=false;endBusy();}
 }
+let genderJob=null,scanGeneration=0;
+// Photo equivalent of the scan's head-and-shoulders samples (v1.12 gender estimate).
+function headCrop(source,b){
+  const W=source.videoWidth||source.naturalWidth||source.width||1,H=source.videoHeight||source.naturalHeight||source.height||1;
+  const cx=(b.x+b.w/2)*W,side=Math.max(b.w*W*1.15,Math.min(b.h*H*.55,b.w*W*1.8));
+  const x=Math.max(0,cx-side/2),y=Math.max(0,(b.y-b.h*.06)*H),w=Math.min(W-x,side),h=Math.min(H-y,side*1.05);
+  if(w<12||h<12)return [];
+  const canvas=document.createElement('canvas'),size=Math.max(64,Math.min(320,Math.round(w)));
+  canvas.width=size;canvas.height=Math.max(1,Math.round(size*h/w));
+  try{canvas.getContext('2d').drawImage(source,x,y,w,h,0,0,canvas.width,canvas.height);}catch{return [];}
+  return [{frame:0,canvas}];
+}
+function setScanChoice(tr,value){const input=$('scan-list').querySelector(`[name="choice-${tr.id}"][value="${value}"]`);if(input)input.checked=true;}
+function applyWomenOnly(){
+  // Cover anyone who is NOT confidently a man (unclear/no face stays covered).
+  // Choices are only pre-selected; the user still reviews and presses Apply.
+  for(const tr of scanResults)setScanChoice(tr,tr.gender?.label==='man'?'skip':'cover');
+  $('scan-all').checked=scanResults.every(tr=>tr.gender?.label!=='man');
+}
+// Optional, explicitly requested (GPT review P1-9): the face model is only
+// downloaded when the user asks for "Cover women only". A generation token
+// guards against stale results after the modal closes or a new scan starts.
+async function classifyScanGenders(){
+  const generation=scanGeneration,tracks=scanResults.filter(tr=>!tr.gender);
+  if(!tracks.length)return true;
+  const job=genderJob={generation};
+  const status=$('scan-gender-status');
+  const live=()=>genderJob===job&&generation===scanGeneration&&!$('scan-modal').classList.contains('hidden');
+  if(status)status.textContent='Estimating likely women/men on this device… (first use downloads ~10 MB)';
+  for(const tr of tracks){const el=$('scan-list').querySelector(`[data-gender-for="${tr.id}"]`);if(el)el.textContent='Checking…';}
+  try{
+    for(const tr of tracks){
+      const g=await estimateTrackGender(tr.faceSamples||[]);
+      if(!live())return false;
+      tr.gender=g;tr.faceSamples=null; // release the crops (P2-16)
+      const caption=$('scan-list').querySelector(`[data-gender-for="${tr.id}"]`);
+      if(caption){caption.textContent=genderCaption(g);caption.dataset.label=g.label;}
+    }
+    if(status)status.textContent='AI estimate from clear faces only. Anyone unclear stays covered. Check every person before applying.';
+    return true;
+  }catch(error){
+    console.warn('Gender estimate unavailable',error);
+    if(!live())return false;
+    for(const tr of tracks)if(!tr.gender)tr.gender={label:'unknown',samples:0};
+    if(status)status.textContent='Gender estimate unavailable (offline?) — everyone stays covered.';
+    for(const el of $('scan-list').querySelectorAll('[data-gender-for]'))if(el.textContent==='Checking…')el.textContent='Unclear — kept covered';
+    return true;
+  }finally{if(genderJob===job)genderJob=null;}
+}
 function showScan(){const list=$('scan-list');list.replaceChildren();$('scan-all').checked=true;
   if(!scanResults.length){const p=document.createElement('p');p.textContent='No people detected. You can still draw a selection manually.';list.append(p);}
   for(const tr of scanResults){const row=document.createElement('div');row.className='scan-person';
     const thumb=document.createElement('img');thumb.className='thumb';thumb.alt=tr.label+' at initial detection';thumb.src=tr.thumbnail;
     const info=document.createElement('div');const name=document.createElement('strong');name.textContent=tr.label;
-    const sub=document.createElement('span');sub.className='dim';sub.textContent=`Visible ${seconds(tr.startTime)}–${seconds(tr.endTime)} · ${tr.track.length} positions (no screen-wide hold)`;info.append(name,sub);
+    const sub=document.createElement('span');sub.className='dim';sub.textContent=kind==='photo'?'Detected in this photo':`Visible ${seconds(tr.startTime)}–${seconds(tr.endTime)} · ${tr.track.length} positions`;
+    const gender=document.createElement('span');gender.className='gender-tag';gender.dataset.genderFor=tr.id;gender.textContent=tr.gender?genderCaption(tr.gender):'';if(tr.gender)gender.dataset.label=tr.gender.label;
+    info.append(name,sub,gender);
     const group=document.createElement('div');group.className='choice-group';
     for(const [value,caption] of [['cover','Cover'],['exclude','Don’t cover'],['skip','Skip']]){
       const label=document.createElement('label'),input=document.createElement('input');input.type='radio';input.name='choice-'+tr.id;input.value=value;input.checked=value==='cover';label.append(input,document.createTextNode(caption));group.append(label);
@@ -533,6 +585,8 @@ function showScan(){const list=$('scan-list');list.replaceChildren();$('scan-all
     info.append(group);row.append(thumb,info);list.append(row);
   }
   $('scan-modal').classList.remove('hidden');
+  scanGeneration++;$('scan-gender-status').textContent='';
+  const women=$('scan-women');if(women)women.classList.toggle('hidden',!scanResults.length);
 }
 function applyScan(tracks,excluded=[]){
   if(!project)return;
@@ -600,7 +654,16 @@ $('scan-apply').onclick=()=>{
   }
   applyScan(covered,excluded);
 };
-$('scan-close').onclick=()=>$('scan-modal').classList.add('hidden');
+$('scan-close').onclick=()=>{scanGeneration++;genderJob=null;$('scan-modal').classList.add('hidden');};
+$('scan-women').onclick=async()=>{
+  const btn=$('scan-women');if(btn.disabled)return;btn.disabled=true;
+  try{
+    const ok=await classifyScanGenders();
+    if(ok&&!$('scan-modal').classList.contains('hidden')){applyWomenOnly();
+      const men=scanResults.filter(tr=>tr.gender?.label==='man').length;
+      toast(men?`${men} likely ${men===1?'man':'men'} set to Skip; everyone else stays covered. Check before applying.`:'No one was confidently identified as a man, so everyone stays covered.');}
+  }finally{btn.disabled=false;}
+};
 $('delete-mask').onclick=deleteMask;$('mask-duplicate').onclick=()=>{duplicateMask();$('mask-menu').classList.add('hidden');};$('mask-delete-menu').onclick=()=>{deleteMask();$('mask-menu').classList.add('hidden');};
 document.addEventListener('pointerdown',e=>{if(!$('mask-menu').classList.contains('hidden')&&!$('mask-menu').contains(e.target))$('mask-menu').classList.add('hidden');});
 $('mask-enabled').onchange=e=>editSelection('enabled',e.target.checked);
