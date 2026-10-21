@@ -11,6 +11,52 @@ export const MODELS={
 };
 const inputCanvas=document.createElement('canvas');
 const inputCtx=inputCanvas.getContext('2d',{willReadFrequently:true});
+const TILE_SIZE=320;
+const tileCanvas=document.createElement('canvas');
+const tileCtx=tileCanvas.getContext('2d',{willReadFrequently:true});
+// Overlapping square tiles (normalized), each the full short side. 16:9 → 3
+// tiles with >60% overlap, so anyone narrower than ~0.6 of the short side is
+// wholly inside at least one tile. Near-square frames need no tiles.
+export function tileLayout(w,h){
+  const aspect=w/Math.max(1,h);
+  if(aspect<1.25&&aspect>0.8)return [];
+  const landscape=aspect>=1;
+  const span=landscape?aspect:1/aspect; // long side in short-side units
+  const count=Math.min(4,Math.max(2,Math.ceil((span-1)/.42)+1));
+  const tiles=[];
+  for(let i=0;i<count;i++){
+    const start=count===1?0:(i*(span-1)/(count-1))/span;
+    tiles.push(landscape?{x:start,y:0,w:1/span,h:1}:{x:0,y:start,w:1,h:1/span});
+  }
+  return tiles;
+}
+const overlapArea=(a,b)=>Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x))*Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y));
+// Cross-pass merge of whole-frame + tile detections. Each detector pass already
+// performs its own NMS, so two boxes from the SAME pass are always kept as two
+// people (shoulder-to-shoulder subjects can overlap heavily). Only boxes from
+// DIFFERENT passes that describe the same body are merged, into their union so
+// coverage never shrinks.
+export function mergeDetections(list){
+  const sorted=[...list].sort((a,b)=>(b.confidence||0)-(a.confidence||0)),kept=[];
+  for(const d of sorted){
+    let target=null;
+    for(const k of kept){
+      if(k.passes.has(d.pass??'full'))continue;
+      const inter=overlapArea(d,k),ad=d.w*d.h,ak=k.w*k.h;
+      const iouV=inter/Math.max(1e-9,ad+ak-inter),contain=inter/Math.max(1e-9,Math.min(ad,ak));
+      const sizeRatio=Math.min(ad,ak)/Math.max(ad,ak);
+      const dc={x:d.x+d.w/2,y:d.y+d.h/2},kc={x:k.x+k.w/2,y:k.y+k.h/2};
+      const centreClose=Math.abs(dc.x-kc.x)<.25*Math.min(d.w,k.w)&&Math.abs(dc.y-kc.y)<.25*Math.min(d.h,k.h);
+      if((iouV>.6&&centreClose)||(contain>.9&&sizeRatio>.55&&centreClose)){target=k;break;}
+    }
+    if(target){
+      const x=Math.min(target.x,d.x),y=Math.min(target.y,d.y);
+      target.w=Math.max(target.x+target.w,d.x+d.w)-x;target.h=Math.max(target.y+target.h,d.y+d.h)-y;target.x=x;target.y=y;
+      target.passes.add(d.pass??'full');
+    }else kept.push({x:d.x,y:d.y,w:d.w,h:d.h,confidence:d.confidence,passes:new Set([d.pass??'full'])});
+  }
+  return kept.map(({passes,...b})=>b);
+}
 function personBoxes(result,width,height) {
   return (result?.detections||[]).filter(d=>d.categories?.some(x=>(x.categoryName||x.displayName||'').toLowerCase()==='person'))
     .map(d=>{
@@ -57,24 +103,55 @@ export class PersonAI {
     }
     throw new Error('No compatible MediaPipe CPU detector');
   }
-  async detect(source, t, fps=30,{force=false}={}) {
+  async detect(source, t, fps=30,{force=false,tiles=true}={}) {
     await this.init();
     const key=Math.round(t*fps);
-    if(!force&&this.frameCache.has(key))return this.frameCache.get(key);
+    // A cached whole-frame-only result is not good enough for a tiled request.
+    if(!force&&this.frameCache.has(key)){const hit=this.frameCache.get(key);if(!tiles||hit?.tiled||!tileLayout(source.videoWidth||source.naturalWidth||source.width||1,source.videoHeight||source.naturalHeight||source.height||1).length)return hit;}
     const w=source.videoWidth||source.naturalWidth||source.width||512;
     const h=source.videoHeight||source.naturalHeight||source.height||288;
     const W=Math.min(512,w),H=Math.max(1,Math.round(W*h/w));
     if(inputCanvas.width!==W)inputCanvas.width=W;if(inputCanvas.height!==H)inputCanvas.height=H;
     inputCtx.drawImage(source,0,0,W,H);
-    // MediaPipe VIDEO expects increasing timestamps even during backwards seeks.
-    this.lastTime=Math.max(this.lastTime+1,Math.round(performance.now()));
-    let res;
-    try{res=this.detector.detectForVideo(inputCanvas,this.lastTime);}
-    catch(e){if(this.delegate!=='CPU'){this.onStatus('GPU inference failed; switching to CPU…');await this.switchToCPU();this.lastTime+=1;res=this.detector.detectForVideo(inputCanvas,this.lastTime);}else throw e;}
-    const boxes=personBoxes(res,W,H);
-    this.frameCache.set(key,boxes);
+    let boxes=personBoxes(await this._run(inputCanvas),W,H);
+    // v1.12: EfficientDet-Lite0 sees a SQUARE 320px input. A 16:9 (or 9:16)
+    // frame is squashed, so medium/small people fall below the score threshold
+    // (measured 0.13–0.35 on clearly visible walkers). Overlapping square tiles
+    // at native aspect raise the same people to 0.77–0.95. Whole-frame boxes are
+    // kept for large/close-up subjects that cross tile borders.
+    if(tiles){
+      const tiled=await this._detectTiles(source,w,h);
+      if(tiled.length)boxes=mergeDetections(boxes.concat(tiled));
+      boxes.tiled=true;
+    }
+    const prev=this.frameCache.get(key);
+    if(!(prev?.tiled&&!boxes.tiled&&!force))this.frameCache.set(key,boxes);
     if(this.frameCache.size>1800){this.frameCache.delete(this.frameCache.keys().next().value);}
     return boxes;
+  }
+  async _run(canvas){
+    // MediaPipe VIDEO expects increasing timestamps even during backwards seeks.
+    this.lastTime=Math.max(this.lastTime+1,Math.round(performance.now()));
+    try{return this.detector.detectForVideo(canvas,this.lastTime);}
+    catch(e){if(this.delegate!=='CPU'){this.onStatus('GPU inference failed; switching to CPU…');await this.switchToCPU();this.lastTime+=1;return this.detector.detectForVideo(canvas,this.lastTime);}throw e;}
+  }
+  async _detectTiles(source,w,h){
+    const layout=tileLayout(w,h);if(!layout.length)return [];
+    const side=TILE_SIZE;
+    if(tileCanvas.width!==side)tileCanvas.width=side;if(tileCanvas.height!==side)tileCanvas.height=side;
+    const out=[];
+    for(const [ti,t] of layout.entries()){
+      tileCtx.drawImage(source,t.x*w,t.y*h,t.w*w,t.h*h,0,0,side,side);
+      const found=personBoxes(await this._run(tileCanvas),side,side);
+      for(const b of found){
+        // A person cut by an INTERIOR tile edge is complete in a neighbouring
+        // overlapping tile (or in the whole-frame pass for large subjects).
+        const edge=.012;
+        if((b.x<edge&&t.x>0)||(b.x+b.w>1-edge&&t.x+t.w<1-1e-6)||(b.y<edge&&t.y>0)||(b.y+b.h>1-edge&&t.y+t.h<1-1e-6))continue;
+        out.push({x:t.x+b.x*t.w,y:t.y+b.y*t.h,w:b.w*t.w,h:b.h*t.h,confidence:b.confidence,pass:'tile'+ti});
+      }
+    }
+    return out;
   }
   // The crop-based ImageSegmenter is used by the Phase 3 mask cache and exporter.
   async initSegmenter(){
@@ -128,7 +205,7 @@ export class PersonAI {
       let lastError;
       for(const delegate of ['GPU','CPU']){
         try{
-          this.pose=await pkg.PoseLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:MODELS.pose,delegate},runningMode:'VIDEO',numPoses:5,outputSegmentationMasks:true,minPoseDetectionConfidence:.35,minPosePresenceConfidence:.35});
+          this.pose=await pkg.PoseLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:MODELS.pose,delegate},runningMode:'IMAGE',numPoses:5,outputSegmentationMasks:true,minPoseDetectionConfidence:.35,minPosePresenceConfidence:.35});
           this.poseDelegate=delegate;this.onStatus(`Person-instance masks ready (${delegate})`);return this.pose;
         }catch(e){lastError=e;}
       }
@@ -146,7 +223,16 @@ export class PersonAI {
     this.poseLastTime=Math.max((this.poseLastTime||0)+1,Math.round(performance.now()));
     let instances=[];
     const read=()=>{
-      this.pose.detectForVideo(cv,this.poseLastTime,result=>{
+      // v1.12: use the RETURN-VALUE form. With the GPU delegate the callback
+      // form hands back all-zero segmentation masks (verified in Chrome),
+      // which silently disabled every per-person outline and forced the
+      // rectangular fallback. The returned result is copied, then closed.
+      // v1.12: IMAGE mode runs the person detector on EVERY frame. VIDEO mode
+      // only re-detects when its tracker is lost, so a second person standing
+      // next to the first was never given a pose/mask (verified: IMAGE finds
+      // 2 of 2 people, VIDEO 1 of 2, on the same frame).
+      const result=this.pose.detect(cv);
+      try{
         instances=(result.landmarks||[]).map((landmarks,i)=>{
           const visible=landmarks.filter(p=>(p.visibility??1)>.28&&p.x>=0&&p.x<=1&&p.y>=0&&p.y<=1);
           if(visible.length<5)return null;
@@ -156,7 +242,7 @@ export class PersonAI {
           return {box:{x:bx,y:by,w:right-bx,h:bottom-by},landmarks,
             mask:mask?{width:mask.width,height:mask.height,data:new Float32Array(mask.getAsFloat32Array())}:null};
         }).filter(Boolean);
-      });
+      }finally{try{result.close?.();}catch{}}
     };
     try{read();}catch(error){
       if(this.poseDelegate!=='GPU')throw error;

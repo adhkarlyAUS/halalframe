@@ -7,7 +7,11 @@ const MP4_MUXER_URL='https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxe
 const WEBM_MUXER_URL='https://cdn.jsdelivr.net/npm/webm-muxer@5.1.4/build/webm-muxer.mjs';
 const FFMPEG_VERSION='0.12.15';
 const FFMPEG_URL=`https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@${FFMPEG_VERSION}/dist/esm`;
-const CORE_URL='https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
+// v1.12: the pinned ffmpeg worker is an ES module worker, where importScripts()
+// is unavailable; it then dynamic-import()s the core, which only works with the
+// ESM build. The UMD build failed with "failed to import ffmpeg-core.js",
+// breaking every WebM/MediaRecorder export (silent WebM, or cleaned-audio error).
+const CORE_URL='https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
 const UTIL_URL='https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js';
 const delay=()=>new Promise(resolve=>setTimeout(resolve,0));
 const abortIf=(signal)=>{if(signal?.aborted)throw new DOMException('Export cancelled','AbortError');};
@@ -65,6 +69,24 @@ async function sourceVideo(file){
     video.addEventListener('loadeddata',loaded,{once:true});video.addEventListener('error',bad,{once:true});video.load();
   });
   return {video,close:()=>{video.pause();video.src='';URL.revokeObjectURL(url);}};
+}
+// Exact, seek-driven frames for containers WebCodecs cannot demux (WebM, etc.).
+// Each yielded VideoFrame is owned and closed by the consumer, like the
+// sequential decoder's frames.
+async function* seekedVideoFrames(file,{signal,fps=30,duration=0,onProgress=()=>{}}={}){
+  const handle=await sourceVideo(file);const video=handle.video;
+  try{
+    const total=[duration,video.duration].find(d=>Number.isFinite(d)&&d>0)||0;
+    if(!total)throw new MediaError('HF_DURATION','This video has no readable duration. Convert it to MP4 and try again.');
+    // ceil(): the final partial frame interval is rendered too (no uncovered tail).
+    const n=Math.max(1,Math.ceil(total*fps-1e-6));
+    for(let i=0;i<n;i++){
+      abortIf(signal);
+      const t=Math.min(Math.max(0,total-.002),i/fps);
+      await seekFrame(video,t,{signal});
+      yield {frame:new VideoFrame(video,{timestamp:Math.round(t*1e6)}),time:t,meta:{width:video.videoWidth,height:video.videoHeight,rotation:0}};
+    }
+  }finally{handle.close();}
 }
 async function decodeAudioBuffer(file){
   const ctx=new (window.AudioContext||window.webkitAudioContext)();
@@ -199,10 +221,14 @@ export async function exportVideo({file,project,maskCache,ai,preset='whatsapp',a
   const probe=await inspectVideoFile(file,{signal,onProgress:p=>onProgress(.025*p,'Inspecting video codec…')});
   if(probe.supported===false)throw new MediaError('HF_SOURCE_CODEC',
     'This source codec cannot be decoded by Chrome. Use Convert for editing, then export again.',{codec:probe.codec,bitDepth:probe.bitDepth});
-  if(probe.probeUnavailable){
-    onStatus('MP4/MOV demuxing unavailable for this format; using realtime browser recording.');
-    return fallbackVideo(options);
-  }
+  // v1.12: WebM (and other non-MP4) sources no longer use the realtime
+  // MediaRecorder path, whose masks lag behind a playing video and which
+  // depended on ffmpeg for sound. Frames are produced by exact seeking instead
+  // and go through the SAME WebCodecs encoder, mask cache and audio pipeline.
+  const frameSource=probe.probeUnavailable?
+    seekedVideoFrames(file,{signal,fps:Math.max(1,Math.min(60,project.video.fps||30)),duration:project.video.duration,onProgress:p=>onProgress(.04+.12*p,'Preparing frames…')}):
+    null;
+  if(probe.probeUnavailable)onStatus('Rendering frame-by-frame (non-MP4 source)…');
   let decodedAudio=null;
   if(audioMode==='clean')decodedAudio=cleanedAudio;
   if(audioMode==='original')decodedAudio=await decodeAudioBuffer(file).catch(()=>null);
@@ -227,7 +253,7 @@ export async function exportVideo({file,project,maskCache,ai,preset='whatsapp',a
     if(navigator.wakeLock?.request)try{lock=await navigator.wakeLock.request('screen');}catch{}
     videoEncoder=new VideoEncoder({output:(chunk,metadata)=>muxer.addVideoChunk(chunk,metadata),error:e=>{encoderError=e;}});
     videoEncoder.configure(cfg);
-    for await(const {frame,time,meta} of sequentialVideoFrames(file,{signal,onProgress:p=>onProgress(.04+.12*p,'Reading compressed video sequentially…')})){
+    for await(const {frame,time,meta} of (frameSource||sequentialVideoFrames(file,{signal,onProgress:p=>onProgress(.04+.12*p,'Reading compressed video sequentially…')}))){
       try{
         abortIf(signal);if(encoderError)throw encoderError;
         // Cap output frame rate by skipping source frames, preserving VFR PTS.
@@ -319,7 +345,7 @@ async function fallbackVideo({file,project,maskCache,ai,preset,audioMode='origin
     try{
       const mp4=await convertRecordedWebM(webm,file,{signal,onStatus,audioMode,cleanedAudio});
       onProgress(1,'Export complete');return {blob:mp4,format:'mp4',audio:audioMode!=='none'};
-    }catch(e){if(audioMode==='clean')throw new Error('Cleaned-audio MP4 conversion failed: '+e.message+'. We will NOT substitute the original soundtrack. Try No audio.');onStatus('MP4 conversion failed: '+e.message+'. WebM video available without guaranteed original audio.');onProgress(1,'WebM fallback ready');return {blob:webm,format:'webm',audio:false,warning:'MP4/audio conversion unavailable. This WebM has no original sound; do not treat it as WhatsApp-compatible MP4.'};}
+    }catch(e){const why=e?.message||String(e);if(audioMode==='clean')throw new Error('Cleaned-audio MP4 conversion failed: '+why+'. We will NOT substitute the original soundtrack. Try No audio.');onStatus('MP4 conversion failed: '+why+'. WebM video available without guaranteed original audio.');onProgress(1,'WebM fallback ready');return {blob:webm,format:'webm',audio:false,warning:'MP4/audio conversion unavailable. This WebM has no original sound; do not treat it as WhatsApp-compatible MP4.'};}
   }finally{
     if(recorder.state!=='inactive')recorder.stop();
     for(const track of stream.getTracks())track.stop();handle.close();

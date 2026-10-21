@@ -23,23 +23,12 @@ export function concealmentRect(box,c,W,H){
 export function relativePixelStep(boxHeightPx,strength=42){
   return clamp(Math.round(Math.max(4,boxHeightPx/10)*(Math.max(3,strength)/42)),4,60);
 }
-// Limit AI-owned regions to their observed median person area. Manual boxes
-// and intentional Whole Frame are exempt. WeakMap keeps this O(1) per frame.
-const medianAreaCache=new WeakMap();
 function boundedPersonRect(r,box,c,W,H){
-  if(!c.precisionCritical||c.wholeFrame||c.manualRegion)return r;
-  let rec=medianAreaCache.get(c);
-  if(!rec||rec.len!==c.track?.length){
-    const areas=c.track.filter(p=>p.confidence>.18).map(p=>p.w*p.h).filter(a=>a>0).sort((a,b)=>a-b);
-    rec={len:c.track?.length,area:areas[Math.floor(areas.length/2)]||box.w*box.h};medianAreaCache.set(c,rec);
-  }
-  const maxArea=Math.min(.20*W*H,2*Math.max(.00001,rec.area)*W*H);
-  if(r.w*r.h<=maxArea)return r;
-  const f=Math.sqrt(maxArea/(r.w*r.h));
-  const w=Math.max(1,r.w*f),h=Math.max(1,r.h*f);
-  const focusX=(box.x+box.w/2)*W,focusY=(box.y+box.h*(c.shape==='outline'?.40:.5))*H;
-  const x=clamp(focusX-w/2,0,W-w),y=clamp(focusY-h/2,0,H-h);
-  return {x,y,w,h};
+  // v1.12 (GPT review P1-4): never shrink a rectangle below the current box.
+  // A person walking towards the camera legitimately grows far beyond their
+  // historic median. Oversized *uncertain* predictions are already bounded in
+  // ByteTrack (cappedGapBox / results), so the renderer only pads.
+  return r;
 }
 function maskImage(entry){
   size(maskCanvas,entry.width,entry.height);
@@ -56,8 +45,11 @@ export function renderFrame(ctx,source,project,time,{debug=false,detections=[],p
   const idx=Math.round(time*Math.max(1,project.video.fps));
   for(const c of activeAt(project,time)){
     const b=c.wholeFrame?{x:0,y:0,w:1,h:1}:boxAt(c,time);if(!b)continue;
-    const r=concealmentRect(b,c,W,H);if(r.w<1||r.h<1)continue;
     const entry=(c.shape==='box'||c.wholeFrame)?null:maskCache?.get(c,idx);
+    // v1.12: a precise mask carries its own (person-extent) rectangle, which can
+    // be larger than the detector box (e.g. arms, long hair, lower body).
+    const r=entry?.rect&&!entry.fallback?{x:entry.rect.x*W,y:entry.rect.y*H,w:entry.rect.w*W,h:entry.rect.h*H}:concealmentRect(b,c,W,H);
+    if(r.w<1||r.h<1)continue;
     // Only two supported effects: legacy black/brand projects migrate to Pixelate.
     // Treat any unknown value as Pixelate defensively, including during undo/redo.
     const effect=c.effect==='blur'?'blur':'pixelate';

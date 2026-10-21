@@ -52,8 +52,12 @@ const boxAround=(c,w,h)=>({x:c.x-w/2,y:c.y-h/2,w,h});
 function stablePixelBox(box,history,W,H){
   const mw=median(history.map(v=>v.w)),mh=median(history.map(v=>v.h));
   let w=Math.max(box.w,mw*.88),h=Math.max(box.h,mh*.88);
-  const maxArea=Math.min(.20*W*H,2*Math.max(1,mw*mh));
+  // v1.12: NO absolute share-of-frame cap. A close-up/selfie subject legitimately
+  // fills 60–90% of the frame; the old 20% cap shrank the region to a face strip.
+  // Growth is bounded relative to this person's own observed median instead.
+  const maxArea=Math.max(box.w*box.h,2.2*Math.max(1,mw*mh));
   if(w*h>maxArea){const f=Math.sqrt(maxArea/(w*h));w*=f;h*=f;}
+  w=Math.min(w,W);h=Math.min(h,H);
   const c=boxCenter(box);return {x:clamp(c.x-w/2,0,W-w),y:clamp(c.y-h/2,0,H-h),w,h};
 }
 export function cappedGapBox(track,frame,W,H,fps){
@@ -62,7 +66,7 @@ export function cappedGapBox(track,frame,W,H,fps){
   const predicted=track.kalman.center(),hist=track.sizes;
   const baseW=median(hist.map(s=>s.w)),baseH=median(hist.map(s=>s.h));
   const grow=1+Math.min(.3,.3*age),w=baseW*grow,h=baseH*grow;
-  const maxA=Math.min(2*baseW*baseH,.20*W*H);
+  const maxA=Math.min(2*baseW*baseH,W*H);
   const f=Math.min(1,Math.sqrt(maxA/(w*h)));
   const a=boxAround(predicted,w*f,h*f);
   a.x=clamp(a.x,0,W-a.w);a.y=clamp(a.y,0,H-a.h);
@@ -90,6 +94,7 @@ function matchCost(track,box,frame,stage,W,H,signature=null){
   // Use APPEARANCE only when re-acquiring lost targets; never in stage 1/2.
   return .54*(1-overlap)+.36*distancePenalty+.10*sizePenalty+(stage==='low'?.06:0)+(app===null?0:.10*(1-app));
 }
+const BIRTH_CONFIDENCE=.30;
 const maxCost=(stage)=>stage==='high'?.77:.79;
 export class ByteTrack {
   constructor({width,height,fps=30,maxLostSeconds=1.5,minHits=6}={}){
@@ -139,7 +144,11 @@ export class ByteTrack {
       tr.pendingReview=null;
       this.point(tr,frame,tr.box,ob.confidence,'ai');matched.push(tr);
     }
-    const unmatchedHigh=high.filter(j=>!usedDetections.has(j));
+    // v1.12: also start (tentative) tracks from mid-confidence detections. A
+    // walker detected at 0.30–0.49 for many consecutive frames was previously
+    // never born until a single ≥0.50 frame, leaving seconds uncovered. The
+    // minHits confirmation still filters one-off false positives.
+    const unmatchedHigh=high.concat(low.filter(j=>detections[j].confidence>=BIRTH_CONFIDENCE)).filter(j=>!usedDetections.has(j));
     for(const j of unmatchedHigh){
       const box=detections[j];
       // Avoid duplicate tracks for a torso/head partial detection of a matched person.
@@ -171,7 +180,9 @@ export class ByteTrack {
       const medianArea=observedAreas[Math.floor(observedAreas.length/2)]||points[0].w*points[0].h;
       // A global per-person cap prevents a short-lived detector union/oversize
       // from persisting as a giant region on a small CCTV pedestrian.
-      for(const p of points)if(p.w*p.h>2*medianArea){
+      // v1.12: only UNCERTAIN (predicted/hold) points are capped; an observed
+      // detection of someone approaching the camera is never shrunk.
+      for(const p of points)if(p.uncertain&&p.w*p.h>2*medianArea){
         const factor=Math.sqrt((2*medianArea)/(p.w*p.h));
         const cx=p.x+p.w/2,cy=p.y+p.h/2;p.w*=factor;p.h*=factor;
         p.x=clamp(cx-p.w/2,0,1-p.w);p.y=clamp(cy-p.h/2,0,1-p.h);
